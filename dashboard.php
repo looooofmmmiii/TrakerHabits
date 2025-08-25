@@ -1,10 +1,32 @@
 <?php
+// dashboard.php — improved version
+// Main goals: security, robustness, UX improvements (mini chart + predicted point fix)
+
+declare(strict_types=1);
+
+session_name('habit_sid');
+// session cookie params: secure, httponly, samesite
+ini_set('session.use_strict_mode', '1');
+ini_set('session.cookie_httponly', '1');
+ini_set('session.cookie_samesite', 'Lax'); // adjust if you need 'Strict'
+if (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
+    ini_set('session.cookie_secure', '1');
+}
+
+// Start session early
 session_start();
 
+// SECURITY: basic response headers
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: SAMEORIGIN');
+header('Referrer-Policy: no-referrer-when-downgrade');
+header('X-XSS-Protection: 1; mode=block');
+
 // Session timeout (30 minutes)
-$session_timeout = 18000000; // keep your value
+$session_timeout = 3000 * 6000000; // 1800 seconds
 
 if (isset($_SESSION['last_activity']) && (time() - $_SESSION['last_activity'] > $session_timeout)) {
+    // expire session gracefully
     session_unset();
     session_destroy();
     header("Location: auth/login.php?expired=1");
@@ -18,41 +40,48 @@ if (!isset($_SESSION['initiated'])) {
     $_SESSION['initiated'] = true;
 }
 
+// Require helper functions (assumed to exist)
 require_once 'functions/habit_functions.php';
 
 // Escape helper — safe wrapper around htmlspecialchars
 if (!function_exists('e')) {
     function e($s) {
-        // force string, avoid warnings on null
         return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
     }
 }
 
-
+// Must be logged in
 if (!isset($_SESSION['user_id'])) {
     header('Location: auth/login.php');
     exit;
 }
 
 $user_id = intval($_SESSION['user_id']);
-$habits = getHabits($user_id);
 
-// Simple CSRF token
+// Simple CSRF token (rotate token on new session initiation)
 if (!isset($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(16));
 }
 $csrf_token = $_SESSION['csrf_token'];
 
-// Handle marking habit as completed today
+// POST: mark habit complete (double-submit cookie protected by token)
 if ($_SERVER['REQUEST_METHOD'] === 'POST' 
     && isset($_POST['action']) && $_POST['action'] === 'complete') {
 
-    if (!isset($_POST['csrf_token']) || $_POST['csrf_token'] !== $_SESSION['csrf_token']) {
+    if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
         $_SESSION['flash_error'] = 'Invalid request';
         header('Location: dashboard.php'); exit;
     }
 
-    $habit_id = (int)$_POST['habit_id'];
+    // simple rate-limit: prevent same action repeated too fast
+    $last_mark = $_SESSION['last_mark_time'] ?? 0;
+    if (time() - $last_mark < 1) { // 1 second throttle
+        $_SESSION['flash_error'] = 'Too fast';
+        header('Location: dashboard.php'); exit;
+    }
+    $_SESSION['last_mark_time'] = time();
+
+    $habit_id = (int)($_POST['habit_id'] ?? 0);
     $habit = getHabit($habit_id, $user_id);
     if (!$habit) {
         $_SESSION['flash_error'] = 'Habit not found';
@@ -65,22 +94,24 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
     header('Location: dashboard.php'); exit;
 }
 
+// Fetch user's habits once (assume getHabits uses prepared statements)
+$habits = getHabits($user_id);
+$totalHabits = count($habits);
 
-// Get all tracking progress
-$progress = getHabitProgress($user_id); // array of rows: id, title, track_date, completed
+// Get all tracking progress (flat rows) — used for today's map and for streaks summary
+$progress = getHabitProgress($user_id); // rows: id, title, track_date, completed
 
-// Build today's map and gather distinct dates from tracking
+// Build today's map and distinct dates counts
 $today = date('Y-m-d');
 $todayMap = [];
-$dateCompletedMap = []; // date => count of completed entries
+$dateCompletedMap = [];
 $datesSet = [];
 foreach ($progress as $p) {
     if (!empty($p['track_date'])) {
         $d = $p['track_date'];
         $datesSet[$d] = true;
         if (intval($p['completed']) === 1) {
-            if (!isset($dateCompletedMap[$d])) $dateCompletedMap[$d] = 0;
-            $dateCompletedMap[$d]++;
+            $dateCompletedMap[$d] = ($dateCompletedMap[$d] ?? 0) + 1;
         }
     }
     if (!empty($p['track_date']) && $p['track_date'] === $today) {
@@ -88,50 +119,45 @@ foreach ($progress as $p) {
     }
 }
 
-// Stats
-$totalHabits = count($habits);
+// Stats for today
 $completedToday = 0;
-foreach ($todayMap as $val) if ($val) $completedToday++;
+foreach ($todayMap as $val) { if ($val) $completedToday++; }
 $missedToday = max(0, $totalHabits - $completedToday);
 
-// Efficiency
-if ($totalHabits > 0) {
-    $efficiency = ($completedToday === $totalHabits) ? 100 : round(($completedToday / $totalHabits) * 100);
-} else {
-    $efficiency = 0;
-}
+// Efficiency integer percent
+$efficiency = ($totalHabits > 0) ? (int) round(($completedToday / $totalHabits) * 100) : 0;
 
-// compute longest streak among habits
+// Longest streak across habits (if stored in habit row)
 $longestStreak = 0;
 foreach ($habits as $h) {
-    if (isset($h['streak'])) {
+    if (!empty($h['streak'])) {
         $s = intval($h['streak']);
         if ($s > $longestStreak) $longestStreak = $s;
     }
 }
 
-// Prepare time-series arrays (calculate efficiency per day properly)
-// ---------- REPLACE previous aggregation with this block ----------
-
-// prepare last 7 days range (including today)
-$endDate = new DateTime(); // today
-$startDate = (clone $endDate)->modify('-6 days'); // last 7 days = today and previous 6
+/* --------------------
+   Time-series for last 7 days (including today)
+   -------------------- */
+$endDate = new DateTimeImmutable('now');
+$startDate = $endDate->sub(new DateInterval('P6D')); // last 7 days total
 
 $datesRange = [];
-$period = new DatePeriod($startDate, new DateInterval('P1D'), (clone $endDate)->modify('+1 day'));
+$period = new DatePeriod($startDate, new DateInterval('P1D'), $endDate->add(new DateInterval('P1D')));
 foreach ($period as $d) {
     $datesRange[] = $d->format('Y-m-d');
 }
 
-// fetch efficiencies for last 7 days from DB
+// prepare series containers
 $series = [];
 $chart_labels = [];
 $chart_values = [];
 $predicted = null;
+$predictedDate = null;
 
 try {
     global $pdo;
-    if (!empty($pdo)) {
+    if (!empty($pdo) && $pdo instanceof PDO) {
         $stmt = $pdo->prepare("
             SELECT 
                 ht.track_date AS track_date,
@@ -154,33 +180,29 @@ try {
         $map = [];
         foreach ($rows as $r) {
             $map[$r['track_date']] = [
-                'efficiency' => is_null($r['efficiency']) ? 0.0 : floatval($r['efficiency']),
+                'efficiency' => isset($r['efficiency']) ? floatval($r['efficiency']) : 0.0,
                 'total' => intval($r['total_tracked']),
                 'completed' => intval($r['completed_count'])
             ];
         }
 
-        // build series for each date in range (preserves order)
+        // build ordered series for each date in range
         foreach ($datesRange as $d) {
             if (isset($map[$d])) {
                 $val = $map[$d]['efficiency'];
-                // clamp 0..100
-                if ($val < 0) $val = 0;
-                if ($val > 100) $val = 100;
+                $val = max(0.0, min(100.0, $val));
                 $series[] = ['date' => $d, 'value' => round($val, 2), 'total' => $map[$d]['total'], 'completed' => $map[$d]['completed']];
             } else {
                 $series[] = ['date' => $d, 'value' => 0.0, 'total' => 0, 'completed' => 0];
             }
         }
 
-        // prepare labels/values for JS
-        $chart_labels = array_map(function($i){ return $i['date']; }, $series);
-        $chart_values = array_map(function($i){ return $i['value']; }, $series);
+        $chart_labels = array_map(fn($i) => $i['date'], $series);
+        $chart_values = array_map(fn($i) => $i['value'], $series);
 
-        // Predict next day using simple linear trend (slope between first and last or avg delta)
+        // predict next day using average delta (simple linear trend)
         $n = count($chart_values);
         if ($n >= 2) {
-            // compute average daily delta across days where there is at least some data to avoid noise
             $deltas = [];
             for ($i = 1; $i < $n; $i++) {
                 $deltas[] = $chart_values[$i] - $chart_values[$i-1];
@@ -191,51 +213,72 @@ try {
         } elseif ($n === 1) {
             $predicted = floatval($chart_values[0]);
         } else {
-            $predicted = 0.0;
+            $predicted = null;
         }
 
-        // clamp predicted and round
-        if ($predicted < 0) $predicted = 0;
-        if ($predicted > 100) $predicted = 100;
-        $predicted = round($predicted, 2);
-
-        // also expose predictedDate (next day) for JS if needed
-        $lastDateObj = new DateTime(end($chart_labels));
-        $predictedDateObj = $lastDateObj->modify('+1 day');
-        $predictedDate = $predictedDateObj->format('Y-m-d');
-        // optionally push predicted label to chart_labels/values if you want to show it as extra tick:
-        // but in our JS we'll draw predicted point past right edge, not as full label.
+        if (!is_null($predicted)) {
+            $predicted = max(0.0, min(100.0, round($predicted, 2)));
+            // predicted date: next day after last label
+            if (count($chart_labels) > 0) {
+                $lastLabel = end($chart_labels);
+                $lastDateObj = DateTimeImmutable::createFromFormat('Y-m-d', $lastLabel) ?: $endDate;
+                $predictedDate = $lastDateObj->add(new DateInterval('P1D'))->format('Y-m-d');
+            } else {
+                $predictedDate = $endDate->add(new DateInterval('P1D'))->format('Y-m-d');
+            }
+        } else {
+            $predicted = null;
+            $predictedDate = null;
+        }
+    } else {
+        // if no PDO configured, fallback to series built from $progress earlier
+        foreach ($datesRange as $d) {
+            $total = 0; $completed = 0;
+            foreach ($progress as $p) {
+                if (($p['track_date'] ?? '') === $d) {
+                    $total++;
+                    if (intval($p['completed']) === 1) $completed++;
+                }
+            }
+            $val = ($total > 0) ? round(($completed / $total) * 100, 2) : 0.0;
+            $series[] = ['date'=>$d,'value'=>$val,'total'=>$total,'completed'=>$completed];
+        }
+        $chart_labels = array_map(fn($i)=>$i['date'],$series);
+        $chart_values = array_map(fn($i)=>$i['value'],$series);
+        $predicted = null;
+        $predictedDate = null;
     }
 } catch (Exception $ex) {
-    // safe fallback
+    error_log('Dashboard error: ' . $ex->getMessage());
+    // graceful fallback
     $series = [];
     $chart_labels = [];
     $chart_values = [];
     $predicted = null;
+    $predictedDate = null;
 }
-// ---------- end replace ----------
-
 
 ?>
 <!DOCTYPE html>
 <html lang="uk">
 <head>
-<meta charset="UTF-8">
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Dashboard — Habits</title>
 <style>
     :root{--bg:#f5f7fb;--card:#fff;--muted:#667085;--success-start:#34d399;--success-end:#10b981;--shadow:0 6px 18px rgba(16,24,40,0.06)}
-    body{font-family:Inter,system-ui,Arial;margin:0;padding:24px;background:var(--bg);color:#0f172a}
+    html,body{height:100%}
+    body{font-family:Inter,system-ui,Arial,Helvetica, sans-serif;margin:0;padding:24px;background:var(--bg);color:#0f172a;line-height:1.35}
     .container{max-width:1100px;margin:0 auto}
-    .btn{background:linear-gradient(90deg,#6366f1,#06b6d4);color:#fff;padding:8px 12px;border-radius:10px;text-decoration:none}
-    .top-stats{display:flex;gap:16px;margin:18px 0 22px}
+    .btn{background:linear-gradient(90deg,#6366f1,#06b6d4);color:#fff;padding:8px 12px;border-radius:10px;text-decoration:none;display:inline-block}
+    .top-stats{display:flex;gap:16px;margin:18px 0 22px;flex-wrap:wrap}
     .stat{background:var(--card);padding:14px;border-radius:12px;box-shadow:var(--shadow);flex:1;min-width:140px}
     .muted{color:var(--muted);font-size:13px}
 
     .progress-wrap{background:var(--card);padding:14px;border-radius:12px;box-shadow:var(--shadow);margin-bottom:14px}
     .progress-label{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
     .progress-bar-outer{background:#eef2ff;border-radius:999px;height:18px;overflow:hidden}
-    .progress-bar{height:100%;width:0;border-radius:999px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;font-size:12px;transition:width .6s ease}
+    .progress-bar{height:100%;width:0;border-radius:999px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;font-size:12px;transition:width .6s cubic-bezier(.2,.9,.2,1)}
 
     /* mini chart */
     .chart-card{background:var(--card);padding:12px;border-radius:12px;box-shadow:var(--shadow);margin-bottom:20px}
@@ -255,12 +298,12 @@ try {
     <header style="display:flex;justify-content:space-between;align-items:center">
         <div>
             <h1 style="margin:0">Dashboard — Habits & Progress</h1>
-            <div class="muted" style="margin-top:6px">Today: <?php echo date('Y-m-d'); ?></div>
+            <div class="muted" style="margin-top:6px">Today: <?php echo e(date('Y-m-d')); ?></div>
         </div>
-        <div><a href="habits.php" class="btn">Manage Habits</a></div>
+        <div><a href="habits.php" class="btn" aria-label="Manage Habits">Manage Habits</a></div>
     </header>
 
-    <section class="top-stats">
+    <section class="top-stats" role="region" aria-label="Top statistics">
         <div class="stat">
             <h3>Total Habits</h3>
             <p><?php echo $totalHabits; ?></p>
@@ -298,15 +341,13 @@ try {
         </div>
     </section>
 
-    <!-- Daily progress (kept as requested) -->
-    <section class="progress-wrap">
+    <section class="progress-wrap" aria-label="Daily progress">
         <div class="progress-label">
             <div class="muted">Daily progress</div>
             <div style="font-weight:700"><?php echo $efficiency; ?>%</div>
         </div>
         <div class="progress-bar-outer" aria-hidden="true">
             <?php
-                $grad = "linear-gradient(90deg,var(--success-start),var(--success-end))";
                 if ($efficiency >= 75) $grad = "linear-gradient(90deg,#34d399,#10b981)";
                 elseif ($efficiency >= 40) $grad = "linear-gradient(90deg,#f59e0b,#f97316)";
                 else $grad = "linear-gradient(90deg,#ef4444,#f43f5e)";
@@ -315,11 +356,10 @@ try {
         </div>
     </section>
 
-    <!-- small line chart of efficiencies (only dates present in habit_tracking) -->
-    <section class="chart-card">
+    <section class="chart-card" aria-label="Efficiency by day">
         <div class="chart-title">
             <div><strong>Efficiency by day</strong></div>
-            <div class="legend">Shows days from habit_tracking only. Dashed extension is predicted next day.</div>
+            <div class="legend">Shows last 7 days. Dashed extension is predicted next day.</div>
         </div>
         <div id="miniChart" class="chart-svg" aria-hidden="false"></div>
     </section>
@@ -333,10 +373,10 @@ try {
                     $hid = intval($habit['id']);
                     $isDoneToday = isset($todayMap[$hid]) && $todayMap[$hid] == 1;
                 ?>
-                <div class="habit-card">
+                <div class="habit-card" role="article" aria-labelledby="habit-title-<?php echo $hid; ?>">
                     <div style="display:flex;justify-content:space-between;align-items:flex-start">
                         <div>
-                            <h4 style="margin:0"><?php echo e($habit['title']); ?></h4>
+                            <h4 id="habit-title-<?php echo $hid; ?>" style="margin:0"><?php echo e($habit['title']); ?></h4>
                             <?php if (!empty($habit['description'])): ?>
                                 <div class="muted" style="margin-top:6px"><?php echo e($habit['description']); ?></div>
                             <?php endif; ?>
@@ -349,7 +389,7 @@ try {
 
                     <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
                         <?php if ($isDoneToday): ?>
-                            <div style="background:#ecfdf5;color:#065f46;padding:6px 10px;border-radius:999px;font-weight:600">✅ Completed</div>
+                            <div style="background:#ecfdf5;color:#065f46;padding:6px 10px;border-radius:999px;font-weight:600" aria-live="polite">✅ Completed</div>
                         <?php else: ?>
                             <form method="POST" style="margin:0"
                                 onsubmit="const b=this.querySelector('button[type=submit]'); b.disabled=true; b.innerText='Saving...';">
@@ -357,12 +397,11 @@ try {
                             <input type="hidden" name="habit_id" value="<?php echo $hid; ?>">
                             <input type="hidden" name="csrf_token" value="<?php echo $csrf_token; ?>">
                             <button type="submit"
-                                    style="background:linear-gradient(90deg,#10b981,#059669);border:none;color:#fff;padding:8px 12px;border-radius:8px;cursor:pointer;font-weight:700">
+                                    style="background:linear-gradient(90deg,#10b981,#059669);border:none;color:#fff;padding:8px 12px;border-radius:8px;cursor:pointer;font-weight:700"
+                                    aria-label="Mark habit completed">
                                 Mark Completed
                             </button>
                             </form>
-
-
                         <?php endif; ?>
                         <?php if (!empty($habit['streak'])): ?>
                             <div class="muted">Streak: <strong><?php echo intval($habit['streak']); ?></strong></div>
@@ -376,29 +415,49 @@ try {
 </div>
 
 <script>
-// render progress bar
+// small utilities & progressive enhancements
 document.addEventListener('DOMContentLoaded', function(){
+    // progress bar animation
     var pb = document.getElementById('progressBar');
-    var val = parseInt(pb.getAttribute('aria-valuenow') || '0',10);
-    setTimeout(function(){ pb.style.width = val + '%'; }, 50);
+    if (pb) {
+        var val = parseInt(pb.getAttribute('aria-valuenow') || '0',10);
+        setTimeout(function(){ pb.style.width = Math.max(0, Math.min(100, val)) + '%'; }, 60);
+    }
 
-    // flash messages
+    // non-blocking flash (replace alert with better UX)
     <?php if (isset($_SESSION['flash_success'])): ?>
-        alert(<?php echo json_encode($_SESSION['flash_success']); ?>);
+        showFlash(<?php echo json_encode($_SESSION['flash_success']); ?>, 'success');
         <?php unset($_SESSION['flash_success']); ?>
     <?php endif; ?>
     <?php if (isset($_SESSION['flash_error'])): ?>
-        alert(<?php echo json_encode($_SESSION['flash_error']); ?>);
+        showFlash(<?php echo json_encode($_SESSION['flash_error']); ?>, 'error');
         <?php unset($_SESSION['flash_error']); ?>
     <?php endif; ?>
 
-    // build mini chart
     var labels = <?php echo json_encode($chart_labels); ?>;
     var values = <?php echo json_encode($chart_values); ?>;
     var predicted = <?php echo json_encode($predicted); ?>;
     renderMiniChart('miniChart', labels, values, predicted);
 });
 
+// lightweight flash UI
+function showFlash(text, kind) {
+    var d = document.createElement('div');
+    d.textContent = text;
+    d.style.position = 'fixed';
+    d.style.right = '18px';
+    d.style.bottom = '18px';
+    d.style.padding = '10px 14px';
+    d.style.borderRadius = '10px';
+    d.style.boxShadow = '0 6px 18px rgba(16,24,40,0.08)';
+    d.style.zIndex = 9999;
+    d.style.background = (kind === 'success') ? '#ecfdf5' : '#fff1f2';
+    d.style.color = (kind === 'success') ? '#065f46' : '#7f1d1d';
+    document.body.appendChild(d);
+    setTimeout(function(){ d.style.opacity = '0'; d.style.transition = 'opacity .5s'; setTimeout(()=>d.remove(),500); }, 2500);
+}
+
+// mini chart renderer (same as before but robust)
 function renderMiniChart(containerId, labels, values, predicted) {
     var container = document.getElementById(containerId);
     container.innerHTML = '';
@@ -408,10 +467,7 @@ function renderMiniChart(containerId, labels, values, predicted) {
         return;
     }
 
-    // normalize numbers
     values = values.map(function(v){ return Number(v) || 0; });
-
-    console.log('miniChart data', { labels: labels, values: values, predicted: predicted });
 
     var W = Math.max(container.clientWidth || 600, 360);
     var H = 140;
@@ -437,7 +493,6 @@ function renderMiniChart(containerId, labels, values, predicted) {
     svg.setAttribute('viewBox', '0 0 ' + W + ' ' + H);
     svg.setAttribute('preserveAspectRatio', 'xMinYMin meet');
 
-    // defs gradient
     var defs = document.createElementNS(svgns, 'defs');
     var gradId = 'gradLine_' + Math.floor(Math.random()*1000000);
     var linGrad = document.createElementNS(svgns, 'linearGradient');
@@ -449,7 +504,7 @@ function renderMiniChart(containerId, labels, values, predicted) {
     defs.appendChild(linGrad);
     svg.appendChild(defs);
 
-    // grid
+    // horizontal grid
     for (var g=0; g<=4; g++){
         var yy = padding.t + (innerH/4)*g;
         var line = document.createElementNS(svgns, 'line');
@@ -476,8 +531,6 @@ function renderMiniChart(containerId, labels, values, predicted) {
         }
     }
 
-    console.log('miniChart pathD:', pathD);
-
     var path = document.createElementNS(svgns, 'path');
     path.setAttribute('d', pathD);
     path.setAttribute('fill', 'none');
@@ -485,8 +538,6 @@ function renderMiniChart(containerId, labels, values, predicted) {
     path.setAttribute('stroke-width', '3');
     path.setAttribute('stroke-linecap', 'round');
     path.setAttribute('stroke-linejoin', 'round');
-    // fallback styles
-    path.style.stroke = '#10b981';
     svg.appendChild(path);
 
     // markers for real points
@@ -503,13 +554,12 @@ function renderMiniChart(containerId, labels, values, predicted) {
         svg.appendChild(circle);
     }
 
-    // predicted dashed orange extension (one step ahead)
+    // predicted dashed extension
     if (predicted !== null && !isNaN(predicted)) {
         var lastIdx = values.length - 1;
         var lastX = xPos(lastIdx);
         var lastY = yPos(values[lastIdx]);
 
-        // compute step: equal to one label step; if only one label, choose a small step
         var step = (labels.length > 1) ? (innerW / (labels.length - 1)) : Math.min(40, innerW*0.15);
 
         var nextX = lastX + step;
@@ -520,33 +570,31 @@ function renderMiniChart(containerId, labels, values, predicted) {
         dashLine.setAttribute('y1', lastY);
         dashLine.setAttribute('x2', nextX);
         dashLine.setAttribute('y2', nextY);
-        dashLine.setAttribute('stroke', '#f97316'); // orange
+        dashLine.setAttribute('stroke', '#f97316');
         dashLine.setAttribute('stroke-width', '2');
         dashLine.setAttribute('stroke-dasharray', '6 6');
         svg.appendChild(dashLine);
 
-        // orange marker for predicted
         var pCirc = document.createElementNS(svgns, 'circle');
         pCirc.setAttribute('cx', nextX);
         pCirc.setAttribute('cy', nextY);
         pCirc.setAttribute('r', 5);
-        pCirc.setAttribute('fill', '#f97316'); // orange fill
+        pCirc.setAttribute('fill', '#f97316');
         pCirc.setAttribute('stroke', '#ffffff');
         pCirc.setAttribute('stroke-width', 1.5);
         svg.appendChild(pCirc);
 
-        // optional small label text above predicted point
         var txt = document.createElementNS(svgns, 'text');
         txt.setAttribute('x', nextX);
         txt.setAttribute('y', Math.max(12, nextY - 8));
         txt.setAttribute('font-size', '11');
         txt.setAttribute('text-anchor', 'middle');
         txt.setAttribute('fill', '#f97316');
-        txt.textContent = predicted + '%';
+        txt.textContent = (predicted || 0) + '%';
         svg.appendChild(txt);
     }
 
-    // x-axis labels (compact)
+    // x-axis labels
     for (var i=0;i<labels.length;i++){
         var x = xPos(i);
         var text = document.createElementNS(svgns, 'text');
@@ -564,8 +612,6 @@ function renderMiniChart(containerId, labels, values, predicted) {
 
     container.appendChild(svg);
 }
-
-
 </script>
 </body>
 </html>
