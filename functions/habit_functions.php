@@ -2,8 +2,7 @@
 require_once __DIR__ . '/../config/db.php';
 
 /**
- * getHabits($user_id, $q = '', $filter = '')
- * Returns array of habits. Supports optional search (q) and frequency filter.
+ * Get all habits of user with optional search and filter
  */
 function getHabits($user_id, $q = '', $filter = '') {
     global $pdo;
@@ -29,40 +28,42 @@ function getHabits($user_id, $q = '', $filter = '') {
 }
 
 /**
- * getHabit($habit_id, $user_id)
- * Return single habit row or null.
+ * Get single habit
  */
 function getHabit($habit_id, $user_id) {
     global $pdo;
     $stmt = $pdo->prepare("SELECT * FROM habits WHERE id = ? AND user_id = ?");
     $stmt->execute([$habit_id, $user_id]);
-    $row = $stmt->fetch(PDO::FETCH_ASSOC);
-    return $row ? $row : null;
+    return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 }
 
 /**
- * addHabit($user_id, $title, $description, $frequency)
- * Adds new habit.
+ * Add new habit
  */
 function addHabit($user_id, $title, $description, $frequency) {
     global $pdo;
-    $stmt = $pdo->prepare("INSERT INTO habits (user_id, title, description, frequency, created_at) VALUES (?, ?, ?, ?, NOW())");
+    $stmt = $pdo->prepare("
+        INSERT INTO habits (user_id, title, description, frequency)
+        VALUES (?, ?, ?, ?)
+    ");
     return $stmt->execute([$user_id, $title, $description, $frequency]);
 }
 
 /**
- * updateHabit($habit_id, $user_id, $title, $description, $frequency)
- * Updates habit only if it belongs to the user.
+ * Update existing habit
  */
 function updateHabit($habit_id, $user_id, $title, $description, $frequency) {
     global $pdo;
-    $stmt = $pdo->prepare("UPDATE habits SET title = ?, description = ?, frequency = ? WHERE id = ? AND user_id = ?");
+    $stmt = $pdo->prepare("
+        UPDATE habits 
+        SET title = ?, description = ?, frequency = ?
+        WHERE id = ? AND user_id = ?
+    ");
     return $stmt->execute([$title, $description, $frequency, $habit_id, $user_id]);
 }
 
 /**
- * deleteHabit($habit_id, $user_id)
- * Deletes habit only if it belongs to the user.
+ * Delete habit
  */
 function deleteHabit($habit_id, $user_id) {
     global $pdo;
@@ -71,33 +72,33 @@ function deleteHabit($habit_id, $user_id) {
 }
 
 /**
- * trackHabit($habit_id, $date)
- * Inserts or marks completed for specific date.
- * Make sure there is a UNIQUE KEY on (habit_id, track_date).
+ * Track habit for specific date
  */
-function trackHabit($habit_id, $date) {
+function trackHabit($habitId, $date) {
     global $pdo;
-    // MySQL ON DUPLICATE KEY approach — needs unique constraint on (habit_id, track_date)
+
     $stmt = $pdo->prepare("
-        INSERT INTO habit_tracking (habit_id, track_date, completed, created_at)
-        VALUES (?, ?, 1, NOW())
-        ON DUPLICATE KEY UPDATE completed = 1, updated_at = NOW()
+        INSERT INTO habit_tracking (habit_id, track_date, completed)
+        VALUES (?, ?, 1)
+        ON DUPLICATE KEY UPDATE completed = 1
     ");
-    return $stmt->execute([$habit_id, $date]);
+    return $stmt->execute([$habitId, $date]);
 }
 
+
 /**
- * getHabitProgressPercentage($user_id, $days = 7)
- * Example: return progress summary for each habit for the last N days.
+ * Progress percentage by habit (last N days)
  */
 function getHabitProgressPercentage($user_id, $days = 7) {
     global $pdo;
     $stmt = $pdo->prepare("
         SELECT h.id, h.title,
-               SUM(IFNULL(ht.completed,0)) as completed_count,
-               COUNT(ht.track_date) as total_count
+               SUM(IFNULL(ht.completed,0)) AS completed_count,
+               COUNT(DISTINCT ht.track_date) AS total_count
         FROM habits h
-        LEFT JOIN habit_tracking ht ON h.id = ht.habit_id AND ht.track_date >= (CURDATE() - INTERVAL ? DAY)
+        LEFT JOIN habit_tracking ht 
+            ON h.id = ht.habit_id 
+           AND ht.track_date >= (CURDATE() - INTERVAL ? DAY)
         WHERE h.user_id = ?
         GROUP BY h.id
     ");
@@ -105,9 +106,22 @@ function getHabitProgressPercentage($user_id, $days = 7) {
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
 
+
+function getEfficiencyByDay($pdo) {
+    $stmt = $pdo->query("
+        SELECT 
+            track_date,
+            ROUND(AVG(completed) * 100, 2) AS efficiency
+        FROM habit_tracking
+        GROUP BY track_date
+        ORDER BY track_date ASC
+    ");
+    return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+
 /**
- * getHabitProgress($user_id)
- * Returns recent tracking rows for user's habits (useful for dashboard).
+ * Get recent tracking activity
  */
 function getHabitProgress($user_id) {
     global $pdo;
