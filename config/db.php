@@ -1,4 +1,7 @@
 <?php
+date_default_timezone_set('Europe/London');
+
+
 $host = 'MySQL-8.0';
 $db   = 'Tracker_Structure';
 $user = 'root';

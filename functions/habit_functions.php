@@ -1,6 +1,39 @@
 <?php
 require_once __DIR__ . '/../config/db.php';
 
+
+
+function resetHabitsForToday($user_id) {
+    global $pdo;
+
+    $today = date('Y-m-d');
+
+    // Отримуємо всі звички юзера
+    $stmt = $pdo->prepare("SELECT id FROM habits WHERE user_id = ?");
+    $stmt->execute([$user_id]);
+    $habits = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($habits as $habit) {
+        $habitId = $habit['id'];
+
+        // Check чи є вже запис на сьогодні
+        $check = $pdo->prepare("
+            SELECT 1 FROM habit_tracking 
+            WHERE habit_id = ? AND track_date = ?
+        ");
+        $check->execute([$habitId, $today]);
+
+        // Якщо немає – створюємо з completed = 0
+        if (!$check->fetch()) {
+            $insert = $pdo->prepare("
+                INSERT INTO habit_tracking (habit_id, track_date, completed)
+                VALUES (?, ?, 0)
+            ");
+            $insert->execute([$habitId, $today]);
+        }
+    }
+}
+
 /**
  * Get all habits of user with optional search and filter
  */
@@ -74,8 +107,12 @@ function deleteHabit($habit_id, $user_id) {
 /**
  * Track habit for specific date
  */
-function trackHabit($habitId, $date) {
+function trackHabit($habitId, $date = null) {
     global $pdo;
+
+    if ($date === null) {
+        $date = date('Y-m-d');
+    }
 
     $stmt = $pdo->prepare("
         INSERT INTO habit_tracking (habit_id, track_date, completed)
@@ -134,4 +171,23 @@ function getHabitProgress($user_id) {
     ");
     $stmt->execute([$user_id]);
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
+}
+
+function ensureTrackingForToday($user_id) {
+    global $pdo;
+    $today = date('Y-m-d');
+
+    // всі daily звички юзера
+    $stmt = $pdo->prepare("SELECT id FROM habits WHERE user_id = ? AND frequency = 'daily'");
+    $stmt->execute([$user_id]);
+    $habits = $stmt->fetchAll(PDO::FETCH_ASSOC);
+
+    foreach ($habits as $habit) {
+        $habitId = $habit['id'];
+        // вставляємо рядок completed=0, якщо його ще нема
+        $pdo->prepare("
+            INSERT IGNORE INTO habit_tracking (habit_id, track_date, completed, created_at, updated_at)
+            VALUES (?, ?, 0, NOW(), NOW())
+        ")->execute([$habitId, $today]);
+    }
 }

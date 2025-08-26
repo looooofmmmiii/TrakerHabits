@@ -23,7 +23,7 @@ header('Referrer-Policy: no-referrer-when-downgrade');
 header('X-XSS-Protection: 1; mode=block');
 
 // Session timeout (30 minutes)
-$session_timeout = 3000 * 6000000; // 1800 seconds
+$session_timeout = 3000 * 60; // 1800 seconds
 
 if (isset($_SESSION['last_activity']) && (time() - $_SESSION['last_activity'] > $session_timeout)) {
     // expire session gracefully
@@ -57,6 +57,10 @@ if (!isset($_SESSION['user_id'])) {
 }
 
 $user_id = intval($_SESSION['user_id']);
+
+$today = date('Y-m-d'); 
+ensureTrackingForToday($user_id);
+
 
 // Simple CSRF token (rotate token on new session initiation)
 if (!isset($_SESSION['csrf_token'])) {
@@ -117,6 +121,21 @@ foreach ($progress as $p) {
     if (!empty($p['track_date']) && $p['track_date'] === $today) {
         $todayMap[intval($p['id'])] = intval($p['completed']);
     }
+}
+
+// --- Sort habits so that not-completed (невиконані) appear first ---
+if (!empty($habits)) {
+    usort($habits, function($a, $b) use ($todayMap) {
+        $aid = intval($a['id']); $bid = intval($b['id']);
+        $ad = isset($todayMap[$aid]) ? intval($todayMap[$aid]) : 0; // 1 if done, 0 otherwise
+        $bd = isset($todayMap[$bid]) ? intval($todayMap[$bid]) : 0;
+        if ($ad === $bd) {
+            // stable fallback: alphabetical by title
+            return strcasecmp($a['title'] ?? '', $b['title'] ?? '');
+        }
+        // put 0 (not completed) before 1 (completed)
+        return ($ad < $bd) ? -1 : 1;
+    });
 }
 
 // Stats for today
@@ -258,6 +277,7 @@ try {
     $predictedDate = null;
 }
 
+
 ?>
 <!DOCTYPE html>
 <html lang="uk">
@@ -288,7 +308,11 @@ try {
 
     /* grid */
     .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
-    .habit-card{background:var(--card);padding:14px;border-radius:12px;box-shadow:var(--shadow)}
+    .habit-card{background:var(--card);padding:14px;border-radius:12px;box-shadow:var(--shadow);cursor:pointer;outline:none}
+    .habit-card:focus{box-shadow:0 8px 30px rgba(2,6,23,0.08);transform:translateY(-2px)}
+    .habit-card .muted{max-height:3.6em;overflow:hidden;text-overflow:ellipsis}
+    .habit-details{margin-top:10px;padding-top:10px;border-top:1px dashed #eef2ff}
+    .habit-actions a{margin-right:8px;text-decoration:none}
 
     @media (max-width:640px){.top-stats{flex-direction:column}}
 </style>
@@ -373,7 +397,7 @@ try {
                     $hid = intval($habit['id']);
                     $isDoneToday = isset($todayMap[$hid]) && $todayMap[$hid] == 1;
                 ?>
-                <div class="habit-card" role="article" aria-labelledby="habit-title-<?php echo $hid; ?>">
+                <div class="habit-card" role="article" tabindex="0" aria-labelledby="habit-title-<?php echo $hid; ?>" data-hid="<?php echo $hid; ?>" aria-expanded="false">
                     <div style="display:flex;justify-content:space-between;align-items:flex-start">
                         <div>
                             <h4 id="habit-title-<?php echo $hid; ?>" style="margin:0"><?php echo e($habit['title']); ?></h4>
@@ -391,14 +415,13 @@ try {
                         <?php if ($isDoneToday): ?>
                             <div style="background:#ecfdf5;color:#065f46;padding:6px 10px;border-radius:999px;font-weight:600" aria-live="polite">✅ Completed</div>
                         <?php else: ?>
-                            <form method="POST" style="margin:0"
-                                onsubmit="const b=this.querySelector('button[type=submit]'); b.disabled=true; b.innerText='Saving...';">
+                            <form method="POST" style="margin:0" onclick="event.stopPropagation();">
                             <input type="hidden" name="action" value="complete">
                             <input type="hidden" name="habit_id" value="<?php echo $hid; ?>">
                             <input type="hidden" name="csrf_token" value="<?php echo $csrf_token; ?>">
                             <button type="submit"
                                     style="background:linear-gradient(90deg,#10b981,#059669);border:none;color:#fff;padding:8px 12px;border-radius:8px;cursor:pointer;font-weight:700"
-                                    aria-label="Mark habit completed">
+                                    aria-label="Mark habit completed" onclick="event.stopPropagation();">
                                 Mark Completed
                             </button>
                             </form>
@@ -407,6 +430,22 @@ try {
                             <div class="muted">Streak: <strong><?php echo intval($habit['streak']); ?></strong></div>
                         <?php endif; ?>
                     </div>
+
+                    <!-- collapsible details / menu (hidden by default) -->
+                    <div id="details-<?php echo $hid; ?>" class="habit-details" style="display:none" aria-hidden="true">
+                        <?php if (!empty($habit['description'])): ?>
+                            <div class="muted"><?php echo e($habit['description']); ?></div>
+                        <?php else: ?>
+                            <div class="muted">No description provided.</div>
+                        <?php endif; ?>
+
+                        <div class="habit-actions" style="margin-top:8px">
+                            <a href="habit_history.php?id=<?php echo $hid; ?>" onclick="event.stopPropagation();">View history</a>
+                            <a href="habits.php?edit=<?php echo $hid; ?>" onclick="event.stopPropagation();">Edit</a>
+                            <a href="habits.php?delete=<?php echo $hid; ?>" onclick="event.stopPropagation(); return confirm('Delete this habit?');">Delete</a>
+                        </div>
+                    </div>
+
                 </div>
                 <?php endforeach; ?>
             </div>
@@ -438,7 +477,38 @@ document.addEventListener('DOMContentLoaded', function(){
     var values = <?php echo json_encode($chart_values); ?>;
     var predicted = <?php echo json_encode($predicted); ?>;
     renderMiniChart('miniChart', labels, values, predicted);
+
+    // Toggle details on card click
+    document.querySelectorAll('.habit-card').forEach(function(card){
+        card.addEventListener('click', function(e){
+            // ignore clicks from interactive children (buttons, links, forms) — they stopPropagation themselves
+            toggleCard(card);
+        });
+        // keyboard support: enter / space
+        card.addEventListener('keydown', function(e){
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                toggleCard(card);
+            }
+        });
+    });
 });
+
+function toggleCard(card){
+    var hid = card.getAttribute('data-hid');
+    var details = document.getElementById('details-' + hid);
+    if (!details) return;
+    var expanded = card.getAttribute('aria-expanded') === 'true';
+    if (expanded) {
+        details.style.display = 'none';
+        details.setAttribute('aria-hidden', 'true');
+        card.setAttribute('aria-expanded', 'false');
+    } else {
+        details.style.display = 'block';
+        details.setAttribute('aria-hidden', 'false');
+        card.setAttribute('aria-expanded', 'true');
+    }
+}
 
 // lightweight flash UI
 function showFlash(text, kind) {
