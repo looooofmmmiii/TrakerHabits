@@ -1,0 +1,22 @@
+# .htaccess — route /api/* -> dashboard.php?__api=...
+# Place this file in your webroot. Requires mod_rewrite enabled.
+<IfModule mod_rewrite.c>
+  RewriteEngine On
+  RewriteBase /
+
+  # Serve real files/dirs directly
+  RewriteCond %{REQUEST_FILENAME} -f [OR]
+  RewriteCond %{REQUEST_FILENAME} -d
+  RewriteRule ^ - [L]
+
+  # API internal rewrite: /api/habit/complete.php  -> /dashboard.php?__api=habit/complete.php
+  RewriteRule ^api/(.*)$ /dashboard.php?__api=$1 [QSA,L]
+
+  # export.php requests routed to dashboard.php (keeps querystring)
+  RewriteRule ^export\.php$ /dashboard.php?__export=1 [QSA,L]
+
+  # Optional: friendly route for habits page if you want single entry
+  # RewriteRule ^habits/?$ /dashboard.php?__page=habits [QSA,L]
+</IfModule>
+
+# Fallback: if mod_rewrite not available, do nothing (server will 404 or serve files)
