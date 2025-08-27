@@ -883,7 +883,7 @@ function showTooltip(root, x, y, label, v) {
     _tt.style.borderRadius = '6px';
     _tt.style.boxShadow = '0 6px 18px rgba(2,6,23,0.06)';
     _tt.style.background = '#fff';
-    _tt.style.color = '#0f172a';
+    _tt.style.color = '#091020ff';
     _tt.style.fontSize = '12px';
     _tt.textContent = (label? label + ': ' : '') + v + '%';
     root.appendChild(_tt);
