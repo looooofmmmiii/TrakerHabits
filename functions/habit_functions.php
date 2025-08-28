@@ -213,9 +213,13 @@ function ensureTrackingForToday($user_id) {
 
 
 
-function e($s) {
-    return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
+// safe wrapper: only declare if not already declared
+if (!function_exists('e')) {
+    function e($s) {
+        return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8');
+    }
 }
+
 
 // Ensure iterable
 function ensure_iterable(&$v) {

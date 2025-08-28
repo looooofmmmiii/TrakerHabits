@@ -188,7 +188,75 @@ foreach ($habits as $h) {
     .container{max-width:1100px;margin:0 auto}
     .btn{background:linear-gradient(90deg,#6366f1,#06b6d4);color:#fff;padding:8px 12px;border-radius:10px;text-decoration:none;display:inline-block}
     .top-stats{display:flex;gap:16px;margin:18px 0 22px;flex-wrap:wrap}
-    .stat{background:var(--card);padding:14px;border-radius:12px;box-shadow:var(--shadow);flex:1;min-width:140px}
+    .stat{
+  /* base */
+  background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(250,250,255,0.92));
+  padding: 14px;
+  border-radius: 12px;
+  box-shadow: 0 10px 30px rgba(16,24,40,0.06);
+  flex: 1;
+  min-width: 140px;
+
+  /* glass + subtle border for depth */
+  border: 1px solid rgba(15,23,42,0.04);
+  -webkit-backdrop-filter: blur(6px);
+  backdrop-filter: blur(6px);
+
+  /* layout & accessibility */
+  position: relative;
+  overflow: hidden;
+  transition: transform .18s cubic-bezier(.16,.84,.2,1), box-shadow .18s ease, border-color .18s ease;
+  will-change: transform;
+}
+
+/* decorative soft accents (keeps rule scoped to .stat) */
+.stat::before{
+  content: '';
+  position: absolute;
+  right: -40%;
+  top: -30%;
+  width: 160%;
+  height: 140%;
+  background:
+    radial-gradient(600px 200px at 10% 20%, rgba(99,102,241,0.08), transparent),
+    radial-gradient(400px 140px at 90% 80%, rgba(6,182,212,0.05), transparent);
+  pointer-events: none;
+  transform: translateZ(0);
+  opacity: 0.95;
+}
+
+/* optional inline ribbon (use data-ribbon attribute) */
+.stat[data-ribbon]::after{
+  content: attr(data-ribbon);
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  font-size: 11px;
+  padding: 6px 10px;
+  border-radius: 999px;
+  color: #fff;
+  font-weight: 700;
+  background: linear-gradient(90deg, #6366f1, #06b6d4);
+  box-shadow: 0 8px 20px rgba(99,102,241,0.12);
+}
+
+/* interaction */
+.stat:hover,
+.stat:focus-within{
+  transform: translateY(-6px);
+  box-shadow: 0 22px 60px rgba(16,24,40,0.12);
+  border-color: rgba(99,102,241,0.08);
+  outline: none;
+}
+
+/* compact responsive tweak */
+@media (max-width: 640px){
+  .stat{
+    padding: 12px;
+    border-radius: 12px;
+  }
+}
+
     .muted{color:var(--muted);font-size:13px}
 
     .progress-wrap{background:var(--card);padding:14px;border-radius:12px;box-shadow:var(--shadow);margin-bottom:14px}
@@ -200,6 +268,7 @@ foreach ($habits as $h) {
     .chart-card{background:var(--card);padding:12px;border-radius:12px;box-shadow:var(--shadow);margin-bottom:20px}
     .chart-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
     .chart-svg{width:100%;height:140px}
+    .container{max-width:1400px; margin:0 auto; padding-left:28px; padding-right:28px}
     .legend{font-size:12px;color:var(--muted)}
 
     /* grid */
@@ -228,10 +297,12 @@ foreach ($habits as $h) {
             <h1 style="margin:0">Dashboard — Habits & Progress</h1>
             <div class="muted" style="margin-top:6px">Today: <?php echo e($today); ?></div>
         </div>
-        <div style="display:flex;gap:8px;align-items:center">
-            <a href="habits.php" class="btn" aria-label="Manage Habits">Manage Habits</a>
-            <button id="rouletteOpen" class="spin-btn" aria-haspopup="dialog">Roulette</button>
-        </div>
+        <div style="display:flex;gap:12px;align-items:center;justify-content:center;flex-wrap:wrap">
+        <a href="dashboard.php" class="btn" aria-label="Go Dashboard">🏠 Dashboard</a>
+        <a href="habits.php" class="btn" aria-label="Manage Habits">🔥 Manage Habits</a>
+        <a href="tasks.php" class="btn" aria-label="Manage Tasks">📌 Manage Tasks</a>
+        <button id="rouletteOpen" class="spin-btn" aria-haspopup="dialog">🎲 Roulette</button>
+    </div>
     </header>
 
     <section class="top-stats" role="region" aria-label="Top statistics">
@@ -267,7 +338,7 @@ foreach ($habits as $h) {
 
         <div class="stat">
         <h3>Best Streak</h3>
-        <p><?php echo intval($longestStreak); ?> now/<?php echo intval($currentBestStreak); ?> the longest</p>
+        <p><?php echo intval($longestStreak); ?> now</p>
         <div class="muted">Longest streak across habits</div>
     </div>
 
