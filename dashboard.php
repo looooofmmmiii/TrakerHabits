@@ -1,12 +1,6 @@
 <?php
-// dashboard.php — fixed, ready-to-drop version
-// Fixes: guards for non-iterables, weekly habit support, removed duplicate logic,
-// safer PDO handling, small JS helpers for Roulette and Efficiency-by-day (SVG)
-
 declare(strict_types=1);
-
 session_name('habit_sid');
-// session cookie params: secure, httponly, samesite
 ini_set('session.use_strict_mode', '1');
 ini_set('session.cookie_httponly', '1');
 ini_set('session.cookie_samesite', 'Lax'); // adjust if you need 'Strict'
@@ -14,17 +8,15 @@ if (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
     ini_set('session.cookie_secure', '1');
 }
 
-// Start session early
 session_start();
 
-// SECURITY: basic response headers
 header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: SAMEORIGIN');
 header('Referrer-Policy: no-referrer-when-downgrade');
 header('X-XSS-Protection: 1; mode=block');
 
 // Session timeout (30 minutes)
-$session_timeout = 1800; // seconds
+$session_timeout = 180000000; // seconds
 
 if (isset($_SESSION['last_activity']) && (time() - $_SESSION['last_activity'] > $session_timeout)) {
     // expire session gracefully
@@ -143,76 +135,293 @@ $weekEndObj = $weekStartObj->add(new DateInterval('P6D'));
 $weekStart = $weekStartObj->format('Y-m-d');
 $weekEnd = $weekEndObj->format('Y-m-d');
 
-// Now build a habit => done map that respects weekly frequency
-$habitDoneMap = []; // habit_id => 1|0
+$habitDoneMap = [];          // habit_id => 1|0
+$habitNextAvailableMap = []; // habit_id => 'YYYY-MM-DD' (when user can next perform this habit)
+
+// helper: parse textual frequency into days interval (returns null if unknown)
+if (!function_exists('parseFrequencyToDays')) {
+    function parseFrequencyToDays(string $freq): ?int {
+        $f = strtolower(trim($freq));
+        if ($f === '') return 1; // default = daily
+
+        // explicit numeric like "7", "every 7 days", "14 days"
+        if (preg_match('/(\d+)\s*(d|day|days)?/', $f, $m)) {
+            return intval($m[1]);
+        }
+        if (strpos($f, 'weekly') !== false || strpos($f, 'week') !== false) return 7;
+        if (strpos($f, 'daily') !== false || strpos($f, 'day') !== false) return 1;
+        if (strpos($f, 'monthly') !== false || strpos($f, 'month') !== false) return 30;
+        // unknown -> null (fallback to legacy logic)
+        return null;
+    }
+}
+
+// helper: compute most recent completed date (YYYY-MM-DD) for habit or null
+if (!function_exists('getLastCompletedDate')) {
+    function getLastCompletedDate(int $hid, array $completedDatesByHabit): ?string {
+        if (empty($completedDatesByHabit[$hid]) || !is_array($completedDatesByHabit[$hid])) return null;
+        $dates = array_keys($completedDatesByHabit[$hid]);
+        if (empty($dates)) return null;
+        rsort($dates); // newest first
+        return $dates[0];
+    }
+}
+
+// helper: format next-available label (returns array: ['date' => 'YYYY-MM-DD', 'label' => '...'])
+if (!function_exists('computeNextAvailable')) {
+    function computeNextAvailable(?string $lastCompleted, ?int $daysInterval, DateTimeImmutable $todayObj): array {
+        // default next available is today
+        $nextDate = $todayObj;
+        $label = 'Available now';
+
+        if (is_int($daysInterval) && $daysInterval > 0) {
+            if ($lastCompleted !== null) {
+                try {
+                    $lastObj = new DateTimeImmutable($lastCompleted);
+                    $nextDate = $lastObj->add(new DateInterval('P' . $daysInterval . 'D'));
+                    if ($nextDate <= $todayObj) {
+                        $label = 'Available now';
+                    } else {
+                        $diff = (int)$todayObj->diff($nextDate)->days;
+                        $label = 'in ' . $diff . ' days'; // simple English phrase for UX
+                    }
+                } catch (Exception $ex) {
+                    $nextDate = $todayObj;
+                    $label = 'Available now';
+                }
+            } else {
+                // never completed -> available immediately
+                $nextDate = $todayObj;
+                $label = 'Available now';
+            }
+        } else {
+            // unknown interval -> fallback to today available (legacy handled elsewhere)
+            $nextDate = $todayObj;
+            $label = 'Available now';
+        }
+
+        return ['date' => $nextDate->format('Y-m-d'), 'label' => $label];
+    }
+}
+
+$todayObj = new DateTimeImmutable($today);
 
 foreach ($habits as $h) {
     $hid = intval($h['id']);
-    // detect frequency field with safe fallback
-    $freq = strtolower(trim((string)($h['frequency'] ?? $h['recurrence'] ?? $h['period'] ?? 'daily')));
+    $freqRaw = (string)($h['frequency'] ?? $h['recurrence'] ?? $h['period'] ?? 'daily');
+    $freq = strtolower(trim($freqRaw));
 
     $done = 0;
-    if ($freq === 'weekly' || $freq === 'week') {
-        // check any completed date inside this week
-        if (!empty($completedDatesByHabit[$hid])) {
-            foreach ($completedDatesByHabit[$hid] as $d => $_) {
-                if ($d >= $weekStart && $d <= $weekEnd) {
+
+    // last completed date if any
+    $lastCompleted = getLastCompletedDate($hid, $completedDatesByHabit); // 'YYYY-MM-DD' or null
+
+    // parse into days interval
+    $daysInterval = parseFrequencyToDays($freq);
+
+    if (is_int($daysInterval) && $daysInterval > 0) {
+        if ($lastCompleted !== null) {
+            try {
+                $lastObj = new DateTimeImmutable($lastCompleted);
+                $diffDays = (int)$todayObj->diff($lastObj)->days;
+                // Completed while required interval NOT passed
+                if ($diffDays < $daysInterval) {
                     $done = 1;
-                    break;
+                } else {
+                    $done = 0;
+                }
+            } catch (Exception $ex) {
+                $done = 0;
+            }
+        } else {
+            // never completed before => not done
+            $done = 0;
+        }
+        // compute next-available date/label
+        $na = computeNextAvailable($lastCompleted, $daysInterval, $todayObj);
+        $habitNextAvailableMap[$hid] = $na;
+    } else {
+        // fallback to legacy semantics
+        if ($freq === 'weekly' || $freq === 'week') {
+            // legacy: any completion inside current ISO week marks done
+            $found = false;
+            if (!empty($completedDatesByHabit[$hid])) {
+                foreach ($completedDatesByHabit[$hid] as $d => $_) {
+                    if ($d >= $weekStart && $d <= $weekEnd) {
+                        $found = true;
+                        break;
+                    }
                 }
             }
-        }
-    } else {
-        // daily (default) — check today's completion
-        if (!empty($completedDatesByHabit[$hid]) && !empty($completedDatesByHabit[$hid][$today])) {
-            $done = 1;
+            $done = $found ? 1 : 0;
+            // next available -> end of week + 1 day
+            $nextObj = DateTimeImmutable::createFromFormat('Y-m-d', $weekEnd)->add(new DateInterval('P1D'));
+            $daysUntil = (int)$todayObj->diff($nextObj)->days;
+            $habitNextAvailableMap[$hid] = ['date' => $nextObj->format('Y-m-d'), 'label' => ($nextObj <= $todayObj ? 'Available now' : 'in ' . $daysUntil . ' days')];
+        } else {
+            // default = daily
+            $done = (!empty($completedDatesByHabit[$hid]) && !empty($completedDatesByHabit[$hid][$today])) ? 1 : 0;
+            // next available: today if not done, otherwise tomorrow
+            if ($done === 1) {
+                $nextObj = $todayObj->add(new DateInterval('P1D'));
+                $habitNextAvailableMap[$hid] = ['date' => $nextObj->format('Y-m-d'), 'label' => 'in 1 day'];
+            } else {
+                $habitNextAvailableMap[$hid] = ['date' => $todayObj->format('Y-m-d'), 'label' => 'Available now'];
+            }
         }
     }
+
     $habitDoneMap[$hid] = $done;
 }
 
-// Sort habits so that not-completed appear first (use $habitDoneMap)
-if (!empty($habits)) {
-    usort($habits, function($a, $b) use ($habitDoneMap) {
-        $aid = intval($a['id']); $bid = intval($b['id']);
-        $ad = isset($habitDoneMap[$aid]) ? intval($habitDoneMap[$aid]) : 0;
-        $bd = isset($habitDoneMap[$bid]) ? intval($habitDoneMap[$bid]) : 0;
-        if ($ad === $bd) {
-            return strcasecmp($a['title'] ?? '', $b['title'] ?? '');
-        }
-        return ($ad < $bd) ? -1 : 1;
-    });
-}
-
 // prepare list of incomplete habits for roulette (use $habitDoneMap)
-$incompleteHabits = [];
+/* --------------------
+   Safe: build displayHabits (incomplete first, completed later)
+   Doesn't mutate original $habits (avoids side-effects on stats/chart)
+   -------------------- */
+
+$incompleteDisplay = [];
+$completedDisplay  = [];
+
 foreach ($habits as $h) {
-    $hid = intval($h['id']);
-    $done = isset($habitDoneMap[$hid]) ? intval($habitDoneMap[$hid]) : 0;
+    $hid = intval($h['id'] ?? 0);
+    $done = isset($habitDoneMap[$hid]) ? intval($habitDoneMap[$hid]) : 0; // 0 = not done, 1 = done
+
+    // stable sort key
+    $title = trim((string)($h['title'] ?? ''));
+    $h['_title_sort'] = function_exists('mb_strtolower') ? mb_strtolower($title) : strtolower($title);
+
     if ($done === 0) {
-        $incompleteHabits[] = [
-            'id' => $hid,
-            'title' => $h['title'] ?? '',
-            'description' => $h['description'] ?? ''
-        ];
+        $incompleteDisplay[] = $h;
+    } else {
+        $completedDisplay[] = $h;
     }
 }
 
+// sort buckets by title (predictable order)
+usort($incompleteDisplay, function($a, $b){
+    return $a['_title_sort'] <=> $b['_title_sort'];
+});
+usort($completedDisplay, function($a, $b){
+    return $a['_title_sort'] <=> $b['_title_sort'];
+});
+
+// merged display list used only for rendering
+$displayHabits = array_merge($incompleteDisplay, $completedDisplay);
+
+// cleanup helper key
+foreach ($displayHabits as &$hh) { unset($hh['_title_sort']); }
+unset($hh);
+
+// fallback safety
+if (!is_array($displayHabits) || empty($displayHabits)) {
+    $displayHabits = $habits;
+}
+
+
 // Stats for today (interpretation: count habits considered done for "today view")
+// safe compute of completedToday using habitDoneMap (normalize keys)
+// Robust completedToday: normalize keys and use habitDoneMap
 $completedToday = 0;
-foreach ($habitDoneMap as $val) { if ($val) $completedToday++; }
+if (!is_array($habitDoneMap)) $habitDoneMap = [];
+
+foreach ($habits as $h) {
+    $hid = intval($h['id'] ?? 0);
+    if ($hid <= 0) continue;
+    // prefer int-key lookup (habitDoneMap keys are ints)
+    $done = 0;
+    if (array_key_exists($hid, $habitDoneMap)) $done = intval($habitDoneMap[$hid]);
+    else {
+        // fallback: maybe keys stored as strings
+        $ks = array_keys($habitDoneMap);
+        if (in_array((string)$hid, $ks, true)) $done = intval($habitDoneMap[(string)$hid]);
+    }
+    if ($done === 1) $completedToday++;
+}
 $missedToday = max(0, $totalHabits - $completedToday);
+
+
 
 // Efficiency integer percent (same semantics)
 $efficiency = ($totalHabits > 0) ? (int) round(($completedToday / $totalHabits) * 100) : 0;
 
 // Longest streak across habits (if stored in habit row)
+$habitStreakMap = []; // habit_id => ['current' => int, 'longest' => int]
 $longestStreak = 0;
-foreach ($habits as $h) {
-    if (!empty($h['streak'])) {
-        $s = intval($h['streak']);
-        if ($s > $longestStreak) $longestStreak = $s;
+
+if (!function_exists('dateToSlot')) {
+    // convert YYYY-MM-DD to integer slot based on interval days
+    function dateToSlot(string $dateStr, int $intervalDays): int {
+        // use UTC epoch days to avoid timezone issues
+        $ts = strtotime($dateStr . ' 00:00:00 UTC');
+        $days = (int) floor($ts / 86400);
+        return intdiv($days, max(1, $intervalDays));
     }
+}
+
+foreach ($habits as $h) {
+    $hid = intval($h['id']);
+    // parse interval in days (reuse parseFrequencyToDays if available)
+    $freqRaw = (string)($h['frequency'] ?? $h['recurrence'] ?? $h['period'] ?? 'daily');
+    $intervalDays = null;
+    if (function_exists('parseFrequencyToDays')) {
+        $intervalDays = parseFrequencyToDays($freqRaw);
+    } else {
+        // fallback simple parser
+        $intervalDays = (stripos($freqRaw, 'week') !== false) ? 7 : ((stripos($freqRaw,'month')!==false)?30:1);
+    }
+    if (!is_int($intervalDays) || $intervalDays <= 0) $intervalDays = 1;
+
+    $dates = [];
+    if (!empty($completedDatesByHabit[$hid]) && is_array($completedDatesByHabit[$hid])) {
+        $dates = array_keys($completedDatesByHabit[$hid]);
+        // ensure unique sorted ascending
+        $dates = array_values(array_unique($dates));
+        sort($dates); // oldest -> newest
+    }
+
+    if (empty($dates)) {
+        $habitStreakMap[$hid] = ['current' => 0, 'longest' => 0];
+        continue;
+    }
+
+    // Build set of slots from completion dates
+    $slotSet = [];
+    foreach ($dates as $d) {
+        $slot = dateToSlot($d, $intervalDays);
+        $slotSet[$slot] = true;
+    }
+    // unique slots sorted ascending
+    $slots = array_keys($slotSet);
+    sort($slots);
+
+    // compute historical longest run (max consecutive integers in $slots)
+    $maxRun = 0;
+    $run = 0;
+    $prev = null;
+    foreach ($slots as $s) {
+        if ($prev === null || $s !== $prev + 1) {
+            // new run
+            $run = 1;
+        } else {
+            $run++;
+        }
+        if ($run > $maxRun) $maxRun = $run;
+        $prev = $s;
+    }
+
+    // compute current streak: count consecutive slots up to slot(today)
+    $todaySlot = dateToSlot(date('Y-m-d'), $intervalDays);
+    $currentRun = 0;
+    $cursor = $todaySlot;
+    while (isset($slotSet[$cursor])) {
+        $currentRun++;
+        $cursor--; // move to previous slot
+    }
+
+    $habitStreakMap[$hid] = ['current' => $currentRun, 'longest' => $maxRun];
+
+    if ($maxRun > $longestStreak) $longestStreak = $maxRun;
 }
 
 /* --------------------
@@ -431,12 +640,46 @@ SQL;
                 <?php endif; ?>
             </div>
         </div>
+        
+<?php
+// --- ensure $longestStreak and $currentBestStreak are defined (safe fallback) ---
+if (!isset($habitStreakMap) || !is_array($habitStreakMap)) {
+    $habitStreakMap = []; // fallback empty map
+}
+
+// compute historical longest (if not present)
+if (!isset($longestStreak)) {
+    $longestStreak = 0;
+    foreach ($habitStreakMap as $hs) {
+        $l = intval($hs['longest'] ?? 0);
+        if ($l > $longestStreak) $longestStreak = $l;
+    }
+}
+
+// compute current best active streak (if not present)
+if (!isset($currentBestStreak)) {
+    $currentBestStreak = 0;
+    foreach ($habitStreakMap as $hs) {
+        $c = intval($hs['current'] ?? 0);
+        if ($c > $currentBestStreak) $currentBestStreak = $c;
+    }
+}
+
+// example: use in markup
+// echoing for debug / template use
+// Longest overall historical streak
+// Current best active streak (how many consecutive periods a habit currently has)
+echo '<!-- debug: $longestStreak = ' . $longestStreak . ' -->' . PHP_EOL;
+echo '<!-- debug: $currentBestStreak = ' . $currentBestStreak . ' -->' . PHP_EOL;
+?>
+
 
         <div class="stat">
-            <h3>Best Streak</h3>
-            <p><?php echo $longestStreak; ?></p>
-            <div class="muted" style="margin-top:6px">Longest streak across habits</div>
-        </div>
+        <h3>Best Streak</h3>
+        <p><?php echo intval($longestStreak); ?> now/<?php echo intval($currentBestStreak); ?> the longest</p>
+        <div class="muted">Longest streak across habits</div>
+    </div>
+
     </section>
 
     <section class="progress-wrap" aria-label="Daily progress">
@@ -467,7 +710,8 @@ SQL;
             <div style="background:var(--card);padding:16px;border-radius:12px;box-shadow:var(--shadow)">No habits found. Go to <a href="habits.php">Manage Habits</a> to add one.</div>
         <?php else: ?>
             <div class="grid">
-                <?php foreach ($habits as $habit):
+                <?php foreach ($displayHabits as $habit):
+
                     $hid = intval($habit['id']);
                     $isDoneToday = isset($habitDoneMap[$hid]) && $habitDoneMap[$hid] == 1;
                 ?>
@@ -480,9 +724,26 @@ SQL;
                             <?php endif; ?>
                         </div>
                         <div style="text-align:right">
-                            <div class="muted">Today</div>
-                            <div style="margin-top:6px;font-weight:700"><?php echo $today; ?></div>
+                            <?php
+                                $nextInfo = $habitNextAvailableMap[$hid] ?? ['date' => $today, 'label' => 'Available now'];
+                                $nextDate = $nextInfo['date'];
+                                $nextLabel = $nextInfo['label'];
+                            ?>
+                            <div class="muted">Available</div>
+                            <div style="margin-top:6px;font-weight:700">
+                                <?php
+                                    // if nextDate is today or earlier -> available now
+                                    $ndObj = DateTimeImmutable::createFromFormat('Y-m-d', $nextDate) ?: new DateTimeImmutable($nextDate);
+                                    if ($ndObj <= new DateTimeImmutable($today)) {
+                                        echo 'Available now';
+                                    } else {
+                                        // show friendly label plus date
+                                        echo e($nextLabel) . ' • ' . e($nextDate);
+                                    }
+                                ?>
+                            </div>
                         </div>
+
                     </div>
 
                     <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
@@ -528,6 +789,25 @@ SQL;
 </div>
 
 <!-- Roulette modal -->
+
+<?php
+// Build $incompleteHabits for JS roulette (safe, uses habitDoneMap)
+$incompleteHabits = [];
+foreach ($habits as $h) {
+    $hid = intval($h['id'] ?? 0);
+    if ($hid <= 0) continue;
+    $done = isset($habitDoneMap[$hid]) ? intval($habitDoneMap[$hid]) : 0;
+    if ($done === 0) {
+        $incompleteHabits[] = [
+            'id' => $hid,
+            'title' => $h['title'] ?? '',
+            'description' => $h['description'] ?? ''
+        ];
+    }
+}
+
+
+?>
 <div id="rouletteModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-hidden="true">
     <div class="modal" role="document">
         <h2 style="margin-top:0">Roulette — pick a task</h2>
