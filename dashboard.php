@@ -1,13 +1,13 @@
 <?php
 declare(strict_types=1);
+
 session_name('habit_sid');
 ini_set('session.use_strict_mode', '1');
 ini_set('session.cookie_httponly', '1');
-ini_set('session.cookie_samesite', 'Lax'); // adjust if you need 'Strict'
-if (isset($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
+ini_set('session.cookie_samesite', 'Lax');
+if (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') {
     ini_set('session.cookie_secure', '1');
 }
-
 session_start();
 
 header('X-Content-Type-Options: nosniff');
@@ -15,11 +15,11 @@ header('X-Frame-Options: SAMEORIGIN');
 header('Referrer-Policy: no-referrer-when-downgrade');
 header('X-XSS-Protection: 1; mode=block');
 
-// Session timeout (30 minutes)
-$session_timeout = 180000000; // seconds
+require_once 'functions/habit_functions.php';
 
+// Session timeout
+$session_timeout = 180000000;
 if (isset($_SESSION['last_activity']) && (time() - $_SESSION['last_activity'] > $session_timeout)) {
-    // expire session gracefully
     session_unset();
     session_destroy();
     header("Location: auth/login.php?expired=1");
@@ -33,10 +33,7 @@ if (!isset($_SESSION['initiated'])) {
     $_SESSION['initiated'] = true;
 }
 
-// Require helper functions (assumed to exist)
-require_once 'functions/habit_functions.php';
-
-// helper: ensure iterable to avoid foreach warnings
+// helper: ensure iterable to avoid foreach warnings (safe fallback)
 if (!function_exists('ensure_iterable')) {
     function ensure_iterable(&$v) {
         if (!is_iterable($v)) $v = [];
@@ -55,30 +52,25 @@ if (!isset($_SESSION['user_id'])) {
     header('Location: auth/login.php');
     exit;
 }
-
-$user_id = intval($_SESSION['user_id']);
+$user_id = (int)$_SESSION['user_id'];
 
 $today = date('Y-m-d');
-ensureTrackingForToday($user_id);
 
-// Simple CSRF token (rotate token on new session initiation)
+// Simple CSRF token
 if (!isset($_SESSION['csrf_token'])) {
     $_SESSION['csrf_token'] = bin2hex(random_bytes(16));
 }
 $csrf_token = $_SESSION['csrf_token'];
 
-// POST: mark habit complete (double-submit cookie protected by token)
-if ($_SERVER['REQUEST_METHOD'] === 'POST'
-    && isset($_POST['action']) && $_POST['action'] === 'complete') {
-
-    if (!isset($_POST['csrf_token']) || !hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'])) {
+// Handle POST (complete habit)
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'complete') {
+    if (!hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'] ?? '')) {
         $_SESSION['flash_error'] = 'Invalid request';
         header('Location: dashboard.php'); exit;
     }
 
-    // simple rate-limit: prevent same action repeated too fast
     $last_mark = $_SESSION['last_mark_time'] ?? 0;
-    if (time() - $last_mark < 1) { // 1 second throttle
+    if (time() - $last_mark < 1) {
         $_SESSION['flash_error'] = 'Too fast';
         header('Location: dashboard.php'); exit;
     }
@@ -91,463 +83,95 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST'
         header('Location: dashboard.php'); exit;
     }
 
-    $today = date('Y-m-d');
-    $ok = trackHabit($habit_id, $today);
+    $ok = trackHabit($habit_id, date('Y-m-d'));
     $_SESSION['flash_' . ($ok ? 'success' : 'error')] = $ok ? 'Habit marked as completed' : 'Unable to track habit';
     header('Location: dashboard.php'); exit;
 }
 
-// Fetch user's habits once (assume getHabits uses prepared statements)
-$habits = getHabits($user_id);
-ensure_iterable($habits);
-$totalHabits = count($habits);
-
-// Get all tracking progress (flat rows) — used for today's map and for streaks summary
-$progress = getHabitProgress($user_id); // rows: id, habit_id, title, track_date, completed
-ensure_iterable($progress);
-
-// Build today's map and distinct dates counts
-$today = date('Y-m-d');
-$completedDatesByHabit = []; // habit_id => [ '2025-08-25' => true, ... ]
-$dateCompletedMap = [];      // date => count of completions (same as before)
-$datesSet = [];
-
-// Populate completedDatesByHabit from $progress (be tolerant to keys: habit_id or id)
-foreach ($progress as $p) {
-    // robust habit id resolution
-    $hid = isset($p['habit_id']) ? intval($p['habit_id']) : (isset($p['id']) ? intval($p['id']) : 0);
-    if ($hid <= 0) continue;
-
-    if (!empty($p['track_date'])) {
-        $d = $p['track_date'];
-        $datesSet[$d] = true;
-        if (intval($p['completed']) === 1) {
-            $dateCompletedMap[$d] = ($dateCompletedMap[$d] ?? 0) + 1;
-            $completedDatesByHabit[$hid][$d] = true;
-        }
-    }
-}
-
-// compute current week range (Monday..Sunday). Uses ISO-like week where Monday is start.
-$dtToday = new DateTimeImmutable($today);
-$weekStartObj = $dtToday->modify('monday this week');
-$weekEndObj = $weekStartObj->add(new DateInterval('P6D'));
-$weekStart = $weekStartObj->format('Y-m-d');
-$weekEnd = $weekEndObj->format('Y-m-d');
-
-$habitDoneMap = [];          // habit_id => 1|0
-$habitNextAvailableMap = []; // habit_id => 'YYYY-MM-DD' (when user can next perform this habit)
-
-// helper: parse textual frequency into days interval (returns null if unknown)
-if (!function_exists('parseFrequencyToDays')) {
-    function parseFrequencyToDays(string $freq): ?int {
-        $f = strtolower(trim($freq));
-        if ($f === '') return 1; // default = daily
-
-        // explicit numeric like "7", "every 7 days", "14 days"
-        if (preg_match('/(\d+)\s*(d|day|days)?/', $f, $m)) {
-            return intval($m[1]);
-        }
-        if (strpos($f, 'weekly') !== false || strpos($f, 'week') !== false) return 7;
-        if (strpos($f, 'daily') !== false || strpos($f, 'day') !== false) return 1;
-        if (strpos($f, 'monthly') !== false || strpos($f, 'month') !== false) return 30;
-        // unknown -> null (fallback to legacy logic)
-        return null;
-    }
-}
-
-// helper: compute most recent completed date (YYYY-MM-DD) for habit or null
-if (!function_exists('getLastCompletedDate')) {
-    function getLastCompletedDate(int $hid, array $completedDatesByHabit): ?string {
-        if (empty($completedDatesByHabit[$hid]) || !is_array($completedDatesByHabit[$hid])) return null;
-        $dates = array_keys($completedDatesByHabit[$hid]);
-        if (empty($dates)) return null;
-        rsort($dates); // newest first
-        return $dates[0];
-    }
-}
-
-// helper: format next-available label (returns array: ['date' => 'YYYY-MM-DD', 'label' => '...'])
-if (!function_exists('computeNextAvailable')) {
-    function computeNextAvailable(?string $lastCompleted, ?int $daysInterval, DateTimeImmutable $todayObj): array {
-        // default next available is today
-        $nextDate = $todayObj;
-        $label = 'Available now';
-
-        if (is_int($daysInterval) && $daysInterval > 0) {
-            if ($lastCompleted !== null) {
-                try {
-                    $lastObj = new DateTimeImmutable($lastCompleted);
-                    $nextDate = $lastObj->add(new DateInterval('P' . $daysInterval . 'D'));
-                    if ($nextDate <= $todayObj) {
-                        $label = 'Available now';
-                    } else {
-                        $diff = (int)$todayObj->diff($nextDate)->days;
-                        $label = 'in ' . $diff . ' days'; // simple English phrase for UX
-                    }
-                } catch (Exception $ex) {
-                    $nextDate = $todayObj;
-                    $label = 'Available now';
-                }
-            } else {
-                // never completed -> available immediately
-                $nextDate = $todayObj;
-                $label = 'Available now';
-            }
-        } else {
-            // unknown interval -> fallback to today available (legacy handled elsewhere)
-            $nextDate = $todayObj;
-            $label = 'Available now';
-        }
-
-        return ['date' => $nextDate->format('Y-m-d'), 'label' => $label];
-    }
-}
-
-$todayObj = new DateTimeImmutable($today);
-
-foreach ($habits as $h) {
-    $hid = intval($h['id']);
-    $freqRaw = (string)($h['frequency'] ?? $h['recurrence'] ?? $h['period'] ?? 'daily');
-    $freq = strtolower(trim($freqRaw));
-
-    $done = 0;
-
-    // last completed date if any
-    $lastCompleted = getLastCompletedDate($hid, $completedDatesByHabit); // 'YYYY-MM-DD' or null
-
-    // parse into days interval
-    $daysInterval = parseFrequencyToDays($freq);
-
-    if (is_int($daysInterval) && $daysInterval > 0) {
-        if ($lastCompleted !== null) {
-            try {
-                $lastObj = new DateTimeImmutable($lastCompleted);
-                $diffDays = (int)$todayObj->diff($lastObj)->days;
-                // Completed while required interval NOT passed
-                if ($diffDays < $daysInterval) {
-                    $done = 1;
-                } else {
-                    $done = 0;
-                }
-            } catch (Exception $ex) {
-                $done = 0;
-            }
-        } else {
-            // never completed before => not done
-            $done = 0;
-        }
-        // compute next-available date/label
-        $na = computeNextAvailable($lastCompleted, $daysInterval, $todayObj);
-        $habitNextAvailableMap[$hid] = $na;
-    } else {
-        // fallback to legacy semantics
-        if ($freq === 'weekly' || $freq === 'week') {
-            // legacy: any completion inside current ISO week marks done
-            $found = false;
-            if (!empty($completedDatesByHabit[$hid])) {
-                foreach ($completedDatesByHabit[$hid] as $d => $_) {
-                    if ($d >= $weekStart && $d <= $weekEnd) {
-                        $found = true;
-                        break;
-                    }
-                }
-            }
-            $done = $found ? 1 : 0;
-            // next available -> end of week + 1 day
-            $nextObj = DateTimeImmutable::createFromFormat('Y-m-d', $weekEnd)->add(new DateInterval('P1D'));
-            $daysUntil = (int)$todayObj->diff($nextObj)->days;
-            $habitNextAvailableMap[$hid] = ['date' => $nextObj->format('Y-m-d'), 'label' => ($nextObj <= $todayObj ? 'Available now' : 'in ' . $daysUntil . ' days')];
-        } else {
-            // default = daily
-            $done = (!empty($completedDatesByHabit[$hid]) && !empty($completedDatesByHabit[$hid][$today])) ? 1 : 0;
-            // next available: today if not done, otherwise tomorrow
-            if ($done === 1) {
-                $nextObj = $todayObj->add(new DateInterval('P1D'));
-                $habitNextAvailableMap[$hid] = ['date' => $nextObj->format('Y-m-d'), 'label' => 'in 1 day'];
-            } else {
-                $habitNextAvailableMap[$hid] = ['date' => $todayObj->format('Y-m-d'), 'label' => 'Available now'];
-            }
-        }
-    }
-
-    $habitDoneMap[$hid] = $done;
-}
-
-// prepare list of incomplete habits for roulette (use $habitDoneMap)
-/* --------------------
-   Safe: build displayHabits (incomplete first, completed later)
-   Doesn't mutate original $habits (avoids side-effects on stats/chart)
-   -------------------- */
-
-$incompleteDisplay = [];
-$completedDisplay  = [];
-
-foreach ($habits as $h) {
-    $hid = intval($h['id'] ?? 0);
-    $done = isset($habitDoneMap[$hid]) ? intval($habitDoneMap[$hid]) : 0; // 0 = not done, 1 = done
-
-    // stable sort key
-    $title = trim((string)($h['title'] ?? ''));
-    $h['_title_sort'] = function_exists('mb_strtolower') ? mb_strtolower($title) : strtolower($title);
-
-    if ($done === 0) {
-        $incompleteDisplay[] = $h;
-    } else {
-        $completedDisplay[] = $h;
-    }
-}
-
-// sort buckets by title (predictable order)
-usort($incompleteDisplay, function($a, $b){
-    return $a['_title_sort'] <=> $b['_title_sort'];
-});
-usort($completedDisplay, function($a, $b){
-    return $a['_title_sort'] <=> $b['_title_sort'];
-});
-
-// merged display list used only for rendering
-$displayHabits = array_merge($incompleteDisplay, $completedDisplay);
-
-// cleanup helper key
-foreach ($displayHabits as &$hh) { unset($hh['_title_sort']); }
-unset($hh);
-
-// fallback safety
-if (!is_array($displayHabits) || empty($displayHabits)) {
-    $displayHabits = $habits;
-}
-
-
-// Stats for today (interpretation: count habits considered done for "today view")
-// safe compute of completedToday using habitDoneMap (normalize keys)
-// Robust completedToday: normalize keys and use habitDoneMap
-$completedToday = 0;
-if (!is_array($habitDoneMap)) $habitDoneMap = [];
-
-foreach ($habits as $h) {
-    $hid = intval($h['id'] ?? 0);
-    if ($hid <= 0) continue;
-    // prefer int-key lookup (habitDoneMap keys are ints)
-    $done = 0;
-    if (array_key_exists($hid, $habitDoneMap)) $done = intval($habitDoneMap[$hid]);
-    else {
-        // fallback: maybe keys stored as strings
-        $ks = array_keys($habitDoneMap);
-        if (in_array((string)$hid, $ks, true)) $done = intval($habitDoneMap[(string)$hid]);
-    }
-    if ($done === 1) $completedToday++;
-}
-$missedToday = max(0, $totalHabits - $completedToday);
-
-
-
-// Efficiency integer percent (same semantics)
-$efficiency = ($totalHabits > 0) ? (int) round(($completedToday / $totalHabits) * 100) : 0;
-
-// Longest streak across habits (if stored in habit row)
-$habitStreakMap = []; // habit_id => ['current' => int, 'longest' => int]
-$longestStreak = 0;
-
-if (!function_exists('dateToSlot')) {
-    // convert YYYY-MM-DD to integer slot based on interval days
-    function dateToSlot(string $dateStr, int $intervalDays): int {
-        // use UTC epoch days to avoid timezone issues
-        $ts = strtotime($dateStr . ' 00:00:00 UTC');
-        $days = (int) floor($ts / 86400);
-        return intdiv($days, max(1, $intervalDays));
-    }
-}
-
-foreach ($habits as $h) {
-    $hid = intval($h['id']);
-    // parse interval in days (reuse parseFrequencyToDays if available)
-    $freqRaw = (string)($h['frequency'] ?? $h['recurrence'] ?? $h['period'] ?? 'daily');
-    $intervalDays = null;
-    if (function_exists('parseFrequencyToDays')) {
-        $intervalDays = parseFrequencyToDays($freqRaw);
-    } else {
-        // fallback simple parser
-        $intervalDays = (stripos($freqRaw, 'week') !== false) ? 7 : ((stripos($freqRaw,'month')!==false)?30:1);
-    }
-    if (!is_int($intervalDays) || $intervalDays <= 0) $intervalDays = 1;
-
-    $dates = [];
-    if (!empty($completedDatesByHabit[$hid]) && is_array($completedDatesByHabit[$hid])) {
-        $dates = array_keys($completedDatesByHabit[$hid]);
-        // ensure unique sorted ascending
-        $dates = array_values(array_unique($dates));
-        sort($dates); // oldest -> newest
-    }
-
-    if (empty($dates)) {
-        $habitStreakMap[$hid] = ['current' => 0, 'longest' => 0];
-        continue;
-    }
-
-    // Build set of slots from completion dates
-    $slotSet = [];
-    foreach ($dates as $d) {
-        $slot = dateToSlot($d, $intervalDays);
-        $slotSet[$slot] = true;
-    }
-    // unique slots sorted ascending
-    $slots = array_keys($slotSet);
-    sort($slots);
-
-    // compute historical longest run (max consecutive integers in $slots)
-    $maxRun = 0;
-    $run = 0;
-    $prev = null;
-    foreach ($slots as $s) {
-        if ($prev === null || $s !== $prev + 1) {
-            // new run
-            $run = 1;
-        } else {
-            $run++;
-        }
-        if ($run > $maxRun) $maxRun = $run;
-        $prev = $s;
-    }
-
-    // compute current streak: count consecutive slots up to slot(today)
-    $todaySlot = dateToSlot(date('Y-m-d'), $intervalDays);
-    $currentRun = 0;
-    $cursor = $todaySlot;
-    while (isset($slotSet[$cursor])) {
-        $currentRun++;
-        $cursor--; // move to previous slot
-    }
-
-    $habitStreakMap[$hid] = ['current' => $currentRun, 'longest' => $maxRun];
-
-    if ($maxRun > $longestStreak) $longestStreak = $maxRun;
-}
-
-/* --------------------
-   Time-series for last 7 days (including today)
-   -------------------- */
-$endDate = new DateTimeImmutable('now');
-$startDate = $endDate->sub(new DateInterval('P6D')); // last 7 days total
-
-$datesRange = [];
-$period = new DatePeriod($startDate, new DateInterval('P1D'), $endDate->add(new DateInterval('P1D')));
-foreach ($period as $d) {
-    $datesRange[] = $d->format('Y-m-d');
-}
-
-// prepare series containers
-$series = [];
-$chart_labels = [];
-$chart_values = [];
-$predicted = null;
-$predictedDate = null;
-
+// --- Obtain dashboard data (prefer centralized function) ---
+global $pdo;
+$data = [];
 try {
-    global $pdo;
-    if (!empty($pdo) && $pdo instanceof PDO) {
-        $sql = <<<'SQL'
-SELECT 
-    ht.track_date AS track_date,
-    ROUND(AVG(ht.completed) * 100, 2) AS efficiency,
-    COUNT(ht.id) AS total_tracked,
-    SUM(ht.completed) AS completed_count
-FROM habit_tracking ht
-JOIN habits h ON h.id = ht.habit_id
-WHERE h.user_id = ?
-  AND ht.track_date BETWEEN ? AND ?
-GROUP BY ht.track_date
-ORDER BY ht.track_date ASC
-SQL;
-        $startStr = $startDate->format('Y-m-d');
-        $endStr = $endDate->format('Y-m-d');
-
-        $stmt = $pdo->prepare($sql);
-        $stmt->execute([$user_id, $startStr, $endStr]);
-        $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-        ensure_iterable($rows);
-
-        // map results by date
-        $map = [];
-        foreach ($rows as $r) {
-            if (!isset($r['track_date'])) continue;
-            $map[$r['track_date']] = [
-                'efficiency' => isset($r['efficiency']) ? floatval($r['efficiency']) : 0.0,
-                'total' => intval($r['total_tracked']),
-                'completed' => intval($r['completed_count'])
-            ];
-        }
-
-        // build ordered series for each date in range
-        foreach ($datesRange as $d) {
-            if (isset($map[$d])) {
-                $val = $map[$d]['efficiency'];
-                $val = max(0.0, min(100.0, $val));
-                $series[] = ['date' => $d, 'value' => round($val, 2), 'total' => $map[$d]['total'], 'completed' => $map[$d]['completed']];
-            } else {
-                $series[] = ['date' => $d, 'value' => 0.0, 'total' => 0, 'completed' => 0];
-            }
-        }
-
-        $chart_labels = array_map(fn($i) => $i['date'], $series);
-        $chart_values = array_map(fn($i) => $i['value'], $series);
-
-        // predict next day using average delta (simple linear trend)
-        $n = count($chart_values);
-        if ($n >= 2) {
-            $deltas = [];
-            for ($i = 1; $i < $n; $i++) {
-                $deltas[] = $chart_values[$i] - $chart_values[$i-1];
-            }
-            $avgDelta = array_sum($deltas) / max(1, count($deltas));
-            $lastVal = floatval($chart_values[$n-1]);
-            $predicted = $lastVal + $avgDelta;
-        } elseif ($n === 1) {
-            $predicted = floatval($chart_values[0]);
-        } else {
-            $predicted = null;
-        }
-
-        if (!is_null($predicted)) {
-            $predicted = max(0.0, min(100.0, round($predicted, 2)));
-            // predicted date: next day after last label
-            if (count($chart_labels) > 0) {
-                $lastLabel = end($chart_labels);
-                $lastDateObj = DateTimeImmutable::createFromFormat('Y-m-d', $lastLabel) ?: $endDate;
-                $predictedDate = $lastDateObj->add(new DateInterval('P1D'))->format('Y-m-d');
-            } else {
-                $predictedDate = $endDate->add(new DateInterval('P1D'))->format('Y-m-d');
-            }
-        } else {
-            $predicted = null;
-            $predictedDate = null;
-        }
+    if (function_exists('getDashboardData')) {
+        // getDashboardData should return an array with all needed fields
+        $data = getDashboardData($user_id, $pdo);
+        if (!is_array($data)) $data = [];
     } else {
-        // if no PDO configured, fallback to series built from $progress earlier
-        foreach ($datesRange as $d) {
-            $total = 0; $completed = 0;
-            foreach ($progress as $p) {
-                if (($p['track_date'] ?? '') === $d) {
-                    $total++;
-                    if (intval($p['completed']) === 1) $completed++;
-                }
-            }
-            $val = ($total > 0) ? round(($completed / $total) * 100, 2) : 0.0;
-            $series[] = ['date'=>$d,'value'=>$val,'total'=>$total,'completed'=>$completed];
-        }
-        $chart_labels = array_map(fn($i)=>$i['date'],$series);
-        $chart_values = array_map(fn($i)=>$i['value'],$series);
-        $predicted = null;
-        $predictedDate = null;
+        // fallback: build minimal dataset using available functions
+        ensureTrackingForToday($user_id);
+        $habits = getHabits($user_id);
+        ensure_iterable($habits);
+        $progress = getHabitProgress($user_id);
+        ensure_iterable($progress);
+
+        $data = [
+            'habits' => $habits,
+            'progress' => $progress,
+            'displayHabits' => $habits,
+            'completedDatesByHabit' => [],
+            'habitDoneMap' => [],
+            'habitNextAvailableMap' => [],
+            'completedToday' => 0,
+            'totalHabits' => count($habits),
+            'missedToday' => count($habits),
+            'efficiency' => 0,
+            'habitStreakMap' => [],
+            'longestStreak' => 0,
+            'chart' => ['labels' => [], 'values' => [], 'series' => [], 'predicted' => null, 'predictedDate' => null]
+        ];
     }
-} catch (Exception $ex) {
-    error_log('Dashboard error: ' . $ex->getMessage());
-    // graceful fallback
-    $series = [];
-    $chart_labels = [];
-    $chart_values = [];
-    $predicted = null;
-    $predictedDate = null;
+} catch (Throwable $ex) {
+    error_log('getDashboardData error: ' . $ex->getMessage());
+    $data = [];
+}
+
+// --- map dashboard data -> local variables (safe fallbacks) ---
+$habits = $data['habits'] ?? [];
+ensure_iterable($habits);
+$displayHabits = $data['displayHabits'] ?? $habits;
+ensure_iterable($displayHabits);
+$progress = $data['progress'] ?? [];
+ensure_iterable($progress);
+$completedDatesByHabit = $data['completedDatesByHabit'] ?? [];
+$habitDoneMap = $data['habitDoneMap'] ?? [];
+$habitNextAvailableMap = $data['habitNextAvailableMap'] ?? [];
+$completedToday = isset($data['completedToday']) ? intval($data['completedToday']) : 0;
+$totalHabits = isset($data['totalHabits']) ? intval($data['totalHabits']) : count($habits);
+$missedToday = isset($data['missedToday']) ? intval($data['missedToday']) : max(0, $totalHabits - $completedToday);
+$efficiency = isset($data['efficiency']) ? intval($data['efficiency']) : 0;
+$habitStreakMap = $data['habitStreakMap'] ?? [];
+$longestStreak = isset($data['longestStreak']) ? intval($data['longestStreak']) : 0;
+
+// chart & series
+$chart_labels = $data['chart']['labels'] ?? [];
+$chart_values = $data['chart']['values'] ?? [];
+$series = $data['chart']['series'] ?? [];
+$predicted = $data['chart']['predicted'] ?? null;
+$predictedDate = $data['chart']['predictedDate'] ?? null;
+
+// compute current best streak and historical longest if not in payload
+if (!is_array($habitStreakMap)) $habitStreakMap = [];
+if (!isset($longestStreak) || $longestStreak === null) $longestStreak = 0;
+// compute current best active streak
+$currentBestStreak = 0;
+foreach ($habitStreakMap as $hs) {
+    $c = intval($hs['current'] ?? 0);
+    if ($c > $currentBestStreak) $currentBestStreak = $c;
+}
+
+// Build incompleteHabits for roulette (safe, uses habitDoneMap)
+$incompleteHabits = [];
+foreach ($habits as $h) {
+    $hid = intval($h['id'] ?? 0);
+    if ($hid <= 0) continue;
+    $done = isset($habitDoneMap[$hid]) ? intval($habitDoneMap[$hid]) : 0;
+    if ($done === 0) {
+        $incompleteHabits[] = [
+            'id' => $hid,
+            'title' => $h['title'] ?? '',
+            'description' => $h['description'] ?? ''
+        ];
+    }
 }
 
 ?>
@@ -602,7 +226,7 @@ SQL;
     <header style="display:flex;justify-content:space-between;align-items:center">
         <div>
             <h1 style="margin:0">Dashboard — Habits & Progress</h1>
-            <div class="muted" style="margin-top:6px">Today: <?php echo e(date('Y-m-d')); ?></div>
+            <div class="muted" style="margin-top:6px">Today: <?php echo e($today); ?></div>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
             <a href="habits.php" class="btn" aria-label="Manage Habits">Manage Habits</a>
@@ -613,66 +237,33 @@ SQL;
     <section class="top-stats" role="region" aria-label="Top statistics">
         <div class="stat">
             <h3>Total Habits</h3>
-            <p><?php echo $totalHabits; ?></p>
+            <p><?php echo intval($totalHabits); ?></p>
             <div class="muted" style="margin-top:6px">Active goals to manage</div>
         </div>
 
         <div class="stat">
             <h3>Completed Today</h3>
-            <p><?php echo $completedToday; ?></p>
-            <div class="muted" style="margin-top:6px"><?php echo $completedToday; ?> / <?php echo $totalHabits; ?> tasks</div>
+            <p><?php echo intval($completedToday); ?></p>
+            <div class="muted" style="margin-top:6px"><?php echo intval($completedToday); ?> / <?php echo intval($totalHabits); ?> tasks</div>
         </div>
 
         <div class="stat">
             <h3>Missed Today</h3>
-            <p><?php echo $missedToday; ?></p>
+            <p><?php echo intval($missedToday); ?></p>
             <div class="muted" style="margin-top:6px">Opportunity to improve</div>
         </div>
 
         <div class="stat">
             <h3>Day Efficiency</h3>
-            <p><?php echo $efficiency; ?>%</p>
+            <p><?php echo intval($efficiency); ?>%</p>
             <div class="muted" style="margin-top:6px">
                 <?php if ($efficiency === 100 && $totalHabits>0): ?>
                     <span style="display:inline-block;padding:6px 10px;border-radius:999px;background:#eef2ff;font-weight:700">All done — Great job!</span>
                 <?php else: ?>
-                    Keep it sustainable — <?php echo $efficiency; ?>% complete
+                    Keep it sustainable — <?php echo intval($efficiency); ?>% complete
                 <?php endif; ?>
             </div>
         </div>
-        
-<?php
-// --- ensure $longestStreak and $currentBestStreak are defined (safe fallback) ---
-if (!isset($habitStreakMap) || !is_array($habitStreakMap)) {
-    $habitStreakMap = []; // fallback empty map
-}
-
-// compute historical longest (if not present)
-if (!isset($longestStreak)) {
-    $longestStreak = 0;
-    foreach ($habitStreakMap as $hs) {
-        $l = intval($hs['longest'] ?? 0);
-        if ($l > $longestStreak) $longestStreak = $l;
-    }
-}
-
-// compute current best active streak (if not present)
-if (!isset($currentBestStreak)) {
-    $currentBestStreak = 0;
-    foreach ($habitStreakMap as $hs) {
-        $c = intval($hs['current'] ?? 0);
-        if ($c > $currentBestStreak) $currentBestStreak = $c;
-    }
-}
-
-// example: use in markup
-// echoing for debug / template use
-// Longest overall historical streak
-// Current best active streak (how many consecutive periods a habit currently has)
-echo '<!-- debug: $longestStreak = ' . $longestStreak . ' -->' . PHP_EOL;
-echo '<!-- debug: $currentBestStreak = ' . $currentBestStreak . ' -->' . PHP_EOL;
-?>
-
 
         <div class="stat">
         <h3>Best Streak</h3>
@@ -685,7 +276,7 @@ echo '<!-- debug: $currentBestStreak = ' . $currentBestStreak . ' -->' . PHP_EOL
     <section class="progress-wrap" aria-label="Daily progress">
         <div class="progress-label">
             <div class="muted">Daily progress</div>
-            <div style="font-weight:700"><?php echo $efficiency; ?>%</div>
+            <div style="font-weight:700"><?php echo intval($efficiency); ?>%</div>
         </div>
         <div class="progress-bar-outer" aria-hidden="true">
             <?php
@@ -693,7 +284,7 @@ echo '<!-- debug: $currentBestStreak = ' . $currentBestStreak . ' -->' . PHP_EOL
                 elseif ($efficiency >= 40) $grad = "linear-gradient(90deg,#f59e0b,#f97316)";
                 else $grad = "linear-gradient(90deg,#ef4444,#f43f5e)";
             ?>
-            <div id="progressBar" class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="<?php echo $efficiency; ?>" style="background: <?php echo $grad; ?>;"><?php echo $efficiency; ?>%</div>
+            <div id="progressBar" class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="<?php echo intval($efficiency); ?>" style="background: <?php echo $grad; ?>;"><?php echo intval($efficiency); ?>%</div>
         </div>
     </section>
 
@@ -732,12 +323,10 @@ echo '<!-- debug: $currentBestStreak = ' . $currentBestStreak . ' -->' . PHP_EOL
                             <div class="muted">Available</div>
                             <div style="margin-top:6px;font-weight:700">
                                 <?php
-                                    // if nextDate is today or earlier -> available now
                                     $ndObj = DateTimeImmutable::createFromFormat('Y-m-d', $nextDate) ?: new DateTimeImmutable($nextDate);
                                     if ($ndObj <= new DateTimeImmutable($today)) {
                                         echo 'Available now';
                                     } else {
-                                        // show friendly label plus date
                                         echo e($nextLabel) . ' • ' . e($nextDate);
                                     }
                                 ?>
@@ -788,26 +377,6 @@ echo '<!-- debug: $currentBestStreak = ' . $currentBestStreak . ' -->' . PHP_EOL
     </main>
 </div>
 
-<!-- Roulette modal -->
-
-<?php
-// Build $incompleteHabits for JS roulette (safe, uses habitDoneMap)
-$incompleteHabits = [];
-foreach ($habits as $h) {
-    $hid = intval($h['id'] ?? 0);
-    if ($hid <= 0) continue;
-    $done = isset($habitDoneMap[$hid]) ? intval($habitDoneMap[$hid]) : 0;
-    if ($done === 0) {
-        $incompleteHabits[] = [
-            'id' => $hid,
-            'title' => $h['title'] ?? '',
-            'description' => $h['description'] ?? ''
-        ];
-    }
-}
-
-
-?>
 <div id="rouletteModal" class="modal-backdrop" role="dialog" aria-modal="true" aria-hidden="true">
     <div class="modal" role="document">
         <h2 style="margin-top:0">Roulette — pick a task</h2>
@@ -893,7 +462,6 @@ document.addEventListener('DOMContentLoaded', function(){
         card.addEventListener('click', function(e){
             toggleCard(card);
         });
-        // keyboard support: enter / space
         card.addEventListener('keydown', function(e){
             if (e.key === 'Enter' || e.key === ' ') {
                 e.preventDefault();
@@ -938,7 +506,6 @@ document.addEventListener('DOMContentLoaded', function(){
    Roulette helpers
    ------------------------ */
 function buildWheel(items, container) {
-    // clear
     container.innerHTML = '';
     if (!items || items.length === 0) return;
 
@@ -954,12 +521,10 @@ function buildWheel(items, container) {
         stops.push(color + ' ' + start + 'deg ' + end + 'deg');
     }
 
-    // background using conic-gradient for crisp sectors
     container.style.background = 'conic-gradient(' + stops.join(',') + ')';
     container.style.transform = 'rotate(0deg)';
     container.style.transition = 'transform 4s cubic-bezier(.17,.67,.34,1)';
 
-    // labels: place small labels around the wheel
     for (var i = 0; i < n; i++) {
         var lbl = document.createElement('div');
         lbl.className = 'wheel-label-item';
@@ -968,7 +533,7 @@ function buildWheel(items, container) {
         lbl.style.left = '50%';
         lbl.style.top = '50%';
         lbl.style.transformOrigin = '0 0';
-        var angle = (i + 0.5) * seg; // middle of segment
+        var angle = (i + 0.5) * seg;
         lbl.style.transform = 'rotate(' + angle + 'deg) translate(0, -138px) rotate(-' + angle + 'deg)';
         lbl.style.fontSize = '13px';
         lbl.style.pointerEvents = 'none';
@@ -984,37 +549,31 @@ function buildWheel(items, container) {
 
 var _spinning = false;
 function spinWheel(items, container, labelEl, goToEl) {
-    if (_spinning) return; // prevent double spin
+    if (_spinning) return;
     if (!items || items.length === 0) return;
     _spinning = true;
 
     var n = items.length;
     var seg = 360 / n;
-    // pick index weighted uniformly
     var index = Math.floor(Math.random() * n);
-    // add bias to make spin feel natural
-    var rounds = Math.floor(Math.random() * 3) + 4; // 4..6 rounds
-    var randOffset = (Math.random() - 0.5) * (seg * 0.6); // small jitter
+    var rounds = Math.floor(Math.random() * 3) + 4;
+    var randOffset = (Math.random() - 0.5) * (seg * 0.6);
     var targetMid = index * seg + seg/2;
     var targetAngle = rounds * 360 + (360 - (targetMid + randOffset));
 
     container.style.transition = 'transform 4.2s cubic-bezier(.17,.67,.34,1)';
-    // apply transform
     requestAnimationFrame(function(){ container.style.transform = 'rotate(' + targetAngle + 'deg)'; });
 
-    // Accessibility: announce start
     labelEl.textContent = 'Spinning...';
 
     setTimeout(function(){
         _spinning = false;
-        // normalize final angle
         var final = targetAngle % 360;
         container.style.transition = 'none';
         container.style.transform = 'rotate(' + (final) + 'deg)';
 
-        // selected index computed by mapping final to sector
         var landed = Math.floor(((360 - final + seg/2) % 360) / seg);
-        landed = (landed + n) % n; // safety
+        landed = (landed + n) % n;
 
         var item = items[landed] || items[index] || {title: 'Unknown', id: null};
         labelEl.textContent = item.title || 'Selected';
@@ -1034,7 +593,6 @@ function spinWheel(items, container, labelEl, goToEl) {
 
 /* ------------------------
    Mini SVG chart for Efficiency by day
-   - draws last N points and predicted dashed extension
    ------------------------ */
 function renderMiniChart(elId, labels, values, predicted) {
     var container = document.getElementById(elId);
@@ -1052,11 +610,9 @@ function renderMiniChart(elId, labels, values, predicted) {
     var plotW = w - padding.l - padding.r;
     var plotH = h - padding.t - padding.b;
 
-    // clamp values to 0..100
     var pts = values.map(function(v){ return clamp(parseFloat(v) || 0, 0, 100); });
-    var maxV = 100; // fixed scale
+    var maxV = 100;
 
-    // map to coordinates
     var stepX = plotW / Math.max(1, pts.length - 1);
     var poly = [];
     for (var i=0;i<pts.length;i++){
@@ -1065,7 +621,6 @@ function renderMiniChart(elId, labels, values, predicted) {
         poly.push({x:x,y:y,v:pts[i],label:labels[i]});
     }
 
-    // create SVG
     var svgNS = 'http://www.w3.org/2000/svg';
     var svg = document.createElementNS(svgNS, 'svg');
     svg.setAttribute('width','100%');
@@ -1074,7 +629,6 @@ function renderMiniChart(elId, labels, values, predicted) {
     svg.setAttribute('role','img');
     svg.setAttribute('aria-label','Efficiency by day chart');
 
-    // background grid lines (0,25,50,75,100)
     for (var g=0; g<=4; g++){
         var y = padding.t + (g/4) * plotH;
         var line = document.createElementNS(svgNS,'line');
@@ -1087,7 +641,6 @@ function renderMiniChart(elId, labels, values, predicted) {
         svg.appendChild(line);
     }
 
-    // polyline for actual values
     var pathD = poly.map(function(p,i){ return (i===0? 'M':'L') + p.x + ' ' + p.y; }).join(' ');
     var path = document.createElementNS(svgNS,'path');
     path.setAttribute('d', pathD);
@@ -1096,7 +649,6 @@ function renderMiniChart(elId, labels, values, predicted) {
     path.setAttribute('stroke-width','2');
     svg.appendChild(path);
 
-    // circles and tooltips
     poly.forEach(function(p,i){
         var c = document.createElementNS(svgNS,'circle');
         c.setAttribute('cx', p.x);
@@ -1107,20 +659,17 @@ function renderMiniChart(elId, labels, values, predicted) {
         c.setAttribute('aria-label', (p.label||'') + ': ' + p.v + '%');
         svg.appendChild(c);
 
-        // simple hover tooltip
         c.addEventListener('mouseenter', function(){ showTooltip(container, p.x, p.y, p.label, p.v); });
         c.addEventListener('focus', function(){ showTooltip(container, p.x, p.y, p.label, p.v); });
         c.addEventListener('mouseleave', hideTooltip);
         c.addEventListener('blur', hideTooltip);
     });
 
-    // predicted dashed line
     if (typeof predicted === 'number') {
         var last = poly[poly.length-1];
-        var xPred = padding.l + (poly.length) * stepX; // next x position
+        var xPred = padding.l + (poly.length) * stepX;
         var yPred = padding.t + (1 - (clamp(predicted,0,100)/maxV)) * plotH;
 
-        // line from last to predicted
         var d = 'M' + last.x + ' ' + last.y + ' L ' + xPred + ' ' + yPred;
         var pPred = document.createElementNS(svgNS,'path');
         pPred.setAttribute('d', d);
@@ -1130,7 +679,6 @@ function renderMiniChart(elId, labels, values, predicted) {
         pPred.setAttribute('stroke-dasharray','6 6');
         svg.appendChild(pPred);
 
-        // predicted dot
         var cp = document.createElementNS(svgNS,'circle');
         cp.setAttribute('cx', xPred);
         cp.setAttribute('cy', yPred);
@@ -1138,7 +686,6 @@ function renderMiniChart(elId, labels, values, predicted) {
         cp.setAttribute('fill', '#10b981');
         svg.appendChild(cp);
 
-        // annotate predicted value
         var t = document.createElementNS(svgNS,'text');
         t.setAttribute('x', xPred);
         t.setAttribute('y', yPred - 8);
@@ -1152,7 +699,6 @@ function renderMiniChart(elId, labels, values, predicted) {
     container.appendChild(svg);
 }
 
-// tooltip helpers for chart
 var _tt = null;
 function showTooltip(root, x, y, label, v) {
     hideTooltip();
@@ -1167,7 +713,6 @@ function showTooltip(root, x, y, label, v) {
     _tt.style.fontSize = '12px';
     _tt.textContent = (label? label + ': ' : '') + v + '%';
     root.appendChild(_tt);
-    // position (convert svg coords to client coords approx)
     var rect = root.getBoundingClientRect();
     _tt.style.left = (rect.left + x - (_tt.offsetWidth||60)/2) + 'px';
     _tt.style.top = (rect.top + y - 42) + 'px';
