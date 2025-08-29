@@ -301,6 +301,7 @@ foreach ($habits as $h) {
         <a href="dashboard.php" class="btn" aria-label="Go Dashboard">🏠 Dashboard</a>
         <a href="habits.php" class="btn" aria-label="Manage Habits">🔥 Manage Habits</a>
         <a href="tasks.php" class="btn" aria-label="Manage Tasks">📌 Manage Tasks</a>
+        <a href="kanban.php" class="btn" aria-label="Manage Tasks">📌 KanBan</a>
         <button id="rouletteOpen" class="spin-btn" aria-haspopup="dialog">🎲 Roulette</button>
     </div>
     </header>
