@@ -35,11 +35,11 @@
 ### 1. Clone the repository
 bash
 
-```
+
 git clone https://your-repo/TrackerHabits.git
 cd TrackerHabits
 
-
+```
 CREATE TABLE `habits` (
   `id` int NOT NULL,
   `user_id` int NOT NULL,
