@@ -38,7 +38,6 @@ git clone https://your-repo/TrackerHabits.git
 cd TrackerHabits
 
 
-```
 CREATE TABLE `habits` (
   `id` int NOT NULL,
   `user_id` int NOT NULL,
@@ -48,7 +47,6 @@ CREATE TABLE `habits` (
   `created_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` timestamp NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-
 
 
 CREATE TABLE `habit_tracking` (
@@ -111,4 +109,4 @@ CREATE TABLE `user_remember_tokens` (
   `user_agent` varchar(255) DEFAULT NULL,
   `ip` varchar(45) DEFAULT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
-```
+
