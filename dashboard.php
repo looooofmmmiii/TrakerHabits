@@ -256,6 +256,39 @@ foreach ($habits as $h) {
     border-radius: 12px;
   }
 }
+/* Опис всередині картки: трьома рядками, з "показати більше" */
+.habit-desc .desc-text{
+    display: -webkit-box;
+    -webkit-line-clamp: 3; /* show 3 lines */
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-height: 3.6em; /* приблизно 3 рядки */
+    line-height: 1.2em;
+    word-break: break-word;
+}
+
+/* Розгорнутий стан */
+.habit-desc.expanded .desc-text{
+    -webkit-line-clamp: none;
+    -webkit-box-orient: initial;
+    max-height: none;
+    overflow: visible;
+}
+
+/* Кнопка-перемикач */
+.desc-toggle{
+    display:inline-block;
+    margin-top:6px;
+    background:none;
+    border:none;
+    color:#0369a1;
+    cursor:pointer;
+    padding:0;
+    font-weight:700;
+    font-size:13px;
+}
+
 
     .muted{color:var(--muted);font-size:13px}
 
@@ -356,8 +389,18 @@ foreach ($habits as $h) {
                 elseif ($efficiency >= 40) $grad = "linear-gradient(90deg,#f59e0b,#f97316)";
                 else $grad = "linear-gradient(90deg,#ef4444,#f43f5e)";
             ?>
-            <div id="progressBar" class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100" aria-valuenow="<?php echo intval($efficiency); ?>" style="background: <?php echo $grad; ?>;"><?php echo intval($efficiency); ?>%</div>
+            <!-- Тепер ми НЕ вставляємо текст в progressBar, а показуємо його тільки зверху -->
+            <div id="progressBar"
+                class="progress-bar"
+                role="progressbar"
+                aria-valuemin="0"
+                aria-valuemax="100"
+                aria-valuenow="<?php echo intval($efficiency); ?>"
+                style="background: <?php echo $grad; ?>;">
+                <!-- текст видалено, щоб не дублювати -->
+            </div>
         </div>
+
     </section>
 
     <section class="chart-card" aria-label="Efficiency by day">
@@ -383,8 +426,20 @@ foreach ($habits as $h) {
                         <div>
                             <h4 id="habit-title-<?php echo $hid; ?>" style="margin:0"><?php echo e($habit['title']); ?></h4>
                             <?php if (!empty($habit['description'])): ?>
-                                <div class="muted" style="margin-top:6px"><?php echo e($habit['description']); ?></div>
+                                <div class="muted habit-desc">
+                                    <div class="desc-text" id="desc-full-<?php echo $hid; ?>">
+                                        <?php echo function_exists('linkify') ? linkify($habit['description']) : e($habit['description']); ?>
+
+                                    </div>
+                                    <button type="button" class="desc-toggle" aria-expanded="false" aria-controls="desc-full-<?php echo $hid; ?>" onclick="event.stopPropagation(); toggleDesc('full-<?php echo $hid; ?>');">
+                                        Show more
+                                    </button>
+                                </div>
+                            <?php else: ?>
+                                <div class="muted">No description provided.</div>
                             <?php endif; ?>
+
+
                         </div>
                         <div style="text-align:right">
                             <?php
@@ -467,6 +522,66 @@ foreach ($habits as $h) {
 <div id="flash" aria-live="polite" style="position:fixed;right:18px;bottom:18px;z-index:99999"></div>
 
 <script>
+
+
+
+
+// Показати / сховати опис (toggle)
+function toggleDesc(id) {
+    // id може бути або число (hid) або string 'full-<hid>' — у коді ми використовуємо id як частину id елемента
+    var elId = (typeof id === 'number') ? 'desc-' + id : 'desc-' + id;
+    var wrapper = document.querySelector('#' + elId)?.closest('.habit-desc');
+    if (!wrapper) {
+        // спробуємо альтернативний id для повного блоку
+        elId = (typeof id === 'number') ? 'desc-full-' + id : 'desc-' + id;
+        wrapper = document.querySelector('#' + elId)?.closest('.habit-desc');
+        if (!wrapper) return;
+    }
+    var btn = wrapper.querySelector('.desc-toggle');
+    var expanded = wrapper.classList.toggle('expanded');
+    if (btn) {
+        btn.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        btn.textContent = expanded ? 'Show less' : 'Show more';
+    }
+}
+
+// Показувати кнопку тільки якщо текст обрізаний
+function initDescriptionToggles() {
+    document.querySelectorAll('.habit-desc').forEach(function(wrap){
+        var txt = wrap.querySelector('.desc-text');
+        var btn = wrap.querySelector('.desc-toggle');
+        if (!txt || !btn) return;
+
+        // якщо скрол більше висоти — значить обрізаний
+        var isClipped = txt.scrollHeight > txt.clientHeight + 1;
+        if (isClipped) {
+            btn.style.display = 'inline-block';
+        } else {
+            btn.style.display = 'none';
+        }
+
+        // запобігати спливанню при кліку на посилання всередині опису
+        wrap.querySelectorAll('a').forEach(function(a){
+            a.addEventListener('click', function(ev){
+                ev.stopPropagation();
+            });
+        });
+    });
+}
+
+// виклик при завантаженні
+document.addEventListener('DOMContentLoaded', function(){
+    // ...Ваш існуючий код...
+    initDescriptionToggles();
+
+    // Також, після ресайзу перерахувати (корисно, якщо верстка зміниться)
+    window.addEventListener('resize', function(){
+        // debounce простий
+        clearTimeout(window._descResizeTimer);
+        window._descResizeTimer = setTimeout(initDescriptionToggles, 250);
+    });
+});
+
 // expose server-side incomplete items to JS
 var INCOMPLETE = <?php echo json_encode(array_values($incompleteHabits), JSON_UNESCAPED_UNICODE); ?> || [];
 
@@ -676,8 +791,10 @@ function renderMiniChart(elId, labels, values, predicted) {
         return;
     }
 
-    var w = container.clientWidth || 600;
-    var h = container.clientHeight || 140;
+    // Отримуємо реальні розміри (включно з padding)
+    var rect = container.getBoundingClientRect();
+    var w = Math.max(320, Math.floor(rect.width)) || 600;
+    var h = Math.max(120, Math.floor(rect.height)) || 140;
     var padding = {l:28, r:12, t:12, b:22};
     var plotW = w - padding.l - padding.r;
     var plotH = h - padding.t - padding.b;
@@ -690,7 +807,7 @@ function renderMiniChart(elId, labels, values, predicted) {
     for (var i=0;i<pts.length;i++){
         var x = padding.l + i * stepX;
         var y = padding.t + (1 - (pts[i]/maxV)) * plotH;
-        poly.push({x:x,y:y,v:pts[i],label:labels[i]});
+        poly.push({x:x,y:y,v:pts[i],label: (labels && labels[i]) ? labels[i] : ''});
     }
 
     var svgNS = 'http://www.w3.org/2000/svg';
@@ -698,9 +815,11 @@ function renderMiniChart(elId, labels, values, predicted) {
     svg.setAttribute('width','100%');
     svg.setAttribute('height', h);
     svg.setAttribute('viewBox','0 0 '+w+' '+h);
+    svg.setAttribute('preserveAspectRatio','xMinYMin meet');
     svg.setAttribute('role','img');
     svg.setAttribute('aria-label','Efficiency by day chart');
 
+    // grid lines
     for (var g=0; g<=4; g++){
         var y = padding.t + (g/4) * plotH;
         var line = document.createElementNS(svgNS,'line');
@@ -713,6 +832,7 @@ function renderMiniChart(elId, labels, values, predicted) {
         svg.appendChild(line);
     }
 
+    // path
     var pathD = poly.map(function(p,i){ return (i===0? 'M':'L') + p.x + ' ' + p.y; }).join(' ');
     var path = document.createElementNS(svgNS,'path');
     path.setAttribute('d', pathD);
@@ -721,6 +841,7 @@ function renderMiniChart(elId, labels, values, predicted) {
     path.setAttribute('stroke-width','2');
     svg.appendChild(path);
 
+    // points
     poly.forEach(function(p,i){
         var c = document.createElementNS(svgNS,'circle');
         c.setAttribute('cx', p.x);
@@ -737,6 +858,7 @@ function renderMiniChart(elId, labels, values, predicted) {
         c.addEventListener('blur', hideTooltip);
     });
 
+    // predicted line (опціонально)
     if (typeof predicted === 'number') {
         var last = poly[poly.length-1];
         var xPred = padding.l + (poly.length) * stepX;
@@ -771,25 +893,11 @@ function renderMiniChart(elId, labels, values, predicted) {
     container.appendChild(svg);
 }
 
-var _tt = null;
-function showTooltip(root, x, y, label, v) {
-    hideTooltip();
-    _tt = document.createElement('div');
-    _tt.style.position = 'absolute';
-    _tt.style.zIndex = 9999;
-    _tt.style.padding = '6px 8px';
-    _tt.style.borderRadius = '6px';
-    _tt.style.boxShadow = '0 6px 18px rgba(2,6,23,0.06)';
-    _tt.style.background = '#fff';
-    _tt.style.color = '#091020ff';
-    _tt.style.fontSize = '12px';
-    _tt.textContent = (label? label + ': ' : '') + v + '%';
-    root.appendChild(_tt);
-    var rect = root.getBoundingClientRect();
-    _tt.style.left = (rect.left + x - (_tt.offsetWidth||60)/2) + 'px';
-    _tt.style.top = (rect.top + y - 42) + 'px';
-}
+
 function hideTooltip(){ try{ if(_tt && _tt.parentNode) _tt.parentNode.removeChild(_tt); _tt = null; }catch(e){} }
+
+
+
 
 </script>
 </body>
