@@ -33,7 +33,9 @@
 ## ⚙️ Installation & Setup
 
 ### 1. Clone the repository
-```bash
+bash
+
+```
 git clone https://your-repo/TrackerHabits.git
 cd TrackerHabits
 
