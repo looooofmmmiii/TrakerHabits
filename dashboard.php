@@ -897,25 +897,45 @@ function hideTooltip(){ try{ if(_tt && _tt.parentNode) _tt.parentNode.removeChil
 <script>
 (function(){
   function saveOrderToServer() {
-    var cards = Array.from(document.querySelectorAll('.grid .habit-card'));
-    var order = cards.map(function(c){ return parseInt(c.dataset.hid,10) || 0; }).filter(Boolean);
+  var cards = Array.from(document.querySelectorAll('.grid .habit-card'));
+  var order = cards.map(function(c){ return parseInt(c.dataset.hid,10) || 0; }).filter(Boolean);
 
-    fetch('reorder_habits.php', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ order: order, csrf_token: <?php echo json_encode($csrf_token); ?> })
-    }).then(function(resp){ return resp.json(); })
-      .then(function(json){
-        if (json && json.ok) {
-          showFlash('Order saved', 'success');
-        } else {
-          showFlash((json && json.error) ? json.error : 'Save failed', 'error');
-        }
-      }).catch(function(err){
-        console.error('saveOrder error', err);
-        showFlash('Network error while saving order', 'error');
+  // Важливо: явно відправляємо credentials, щоб сесійна кука дійшла до сервера
+  fetch('/reorder_habits.php', {   // <- можеш змінити на 'reorder_habits.php' якщо файл в тій же папці
+    method: 'POST',
+    credentials: 'same-origin',   // <- критично для сесії
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ order: order, csrf_token: <?php echo json_encode($csrf_token); ?> })
+  })
+  .then(function(resp){
+    // Якщо сервер повернув не 2xx — намагаємось прочитати текст та викинути помилку з повідомленням
+    if (!resp.ok) {
+      return resp.text().then(function(t){
+        throw new Error('Server ' + resp.status + ': ' + (t || resp.statusText));
       });
-  }
+    }
+    // безпечніше: перевіряємо контент-type перед парсингом
+    var ct = resp.headers.get('content-type') || '';
+    if (ct.indexOf('application/json') === -1) {
+      return resp.text().then(function(t){
+        throw new Error('Invalid JSON response: ' + t);
+      });
+    }
+    return resp.json();
+  })
+  .then(function(json){
+    if (json && json.ok) {
+      showFlash('Order saved', 'success');
+    } else {
+      showFlash((json && json.error) ? json.error : 'Save failed', 'error');
+    }
+  })
+  .catch(function(err){
+    console.error('saveOrder error', err);
+    showFlash('Network error while saving order — ' + (err && err.message ? err.message : 'check console'), 'error');
+  });
+}
+
 
   document.addEventListener('DOMContentLoaded', function(){
     var grid = document.querySelector('.grid');
