@@ -54,11 +54,13 @@ function getHabits($user_id, $q = '', $filter = '') {
         $params[] = $filter;
     }
 
-    $sql .= " ORDER BY id DESC";
+    // important: order by sort_order then id as tiebreaker
+    $sql .= " ORDER BY COALESCE(sort_order, 0) ASC, id ASC";
     $stmt = $pdo->prepare($sql);
     $stmt->execute($params);
     return $stmt->fetchAll(PDO::FETCH_ASSOC);
 }
+
 
 /**
  * Get single habit
@@ -75,12 +77,28 @@ function getHabit($habit_id, $user_id) {
  */
 function addHabit($user_id, $title, $description, $frequency) {
     global $pdo;
-    $stmt = $pdo->prepare("
-        INSERT INTO habits (user_id, title, description, frequency)
-        VALUES (?, ?, ?, ?)
-    ");
-    return $stmt->execute([$user_id, $title, $description, $frequency]);
+    try {
+        $pdo->beginTransaction();
+        $stmt = $pdo->prepare("SELECT COALESCE(MAX(sort_order),0) AS m FROM habits WHERE user_id = ?");
+        $stmt->execute([$user_id]);
+        $m = intval($stmt->fetchColumn());
+        $next = $m + 1;
+
+        $ins = $pdo->prepare("
+            INSERT INTO habits (user_id, title, description, frequency, sort_order, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, NOW(), NOW())
+        ");
+        $ok = $ins->execute([$user_id, $title, $description, $frequency, $next]);
+
+        $pdo->commit();
+        return $ok;
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        error_log('addHabit error: '.$e->getMessage());
+        return false;
+    }
 }
+
 
 /**
  * Update existing habit
@@ -191,25 +209,6 @@ function ensureTrackingForToday($user_id) {
         ")->execute([$habitId, $today]);
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -417,17 +416,22 @@ function getDashboardData(int $user_id, $pdo = null): array {
     }
 
     // build displayHabits: incomplete first, then completed
-    $incompleteDisplay = []; $completedDisplay = [];
+    // build displayHabits: incomplete first, then completed
+    // IMPORTANT: preserve DB order (sort_order) within each group
+    $incompleteDisplay = [];
+    $completedDisplay = [];
     foreach ($habits as $h) {
         $hid = intval($h['id'] ?? 0);
         $done = isset($habitDoneMap[$hid]) ? intval($habitDoneMap[$hid]) : 0;
-        $title = trim((string)($h['title'] ?? ''));
-        $h['_title_sort'] = function_exists('mb_strtolower') ? mb_strtolower($title) : strtolower($title);
-        if ($done === 0) $incompleteDisplay[] = $h; else $completedDisplay[] = $h;
+        if ($done === 0) {
+            $incompleteDisplay[] = $h;
+        } else {
+            $completedDisplay[] = $h;
+        }
     }
-    usort($incompleteDisplay, function($a,$b){ return ($a['_title_sort'] ?? '') <=> ($b['_title_sort'] ?? ''); });
-    usort($completedDisplay, function($a,$b){ return ($a['_title_sort'] ?? '') <=> ($b['_title_sort'] ?? ''); });
+    // Do NOT resort by title — keep DB order (sort_order) that $habits already has
     $displayHabits = array_merge($incompleteDisplay, $completedDisplay);
+
     foreach ($displayHabits as &$hh) { unset($hh['_title_sort']); } unset($hh);
     if (!is_array($displayHabits) || empty($displayHabits)) $displayHabits = $habits;
 
@@ -579,5 +583,40 @@ SQL;
         'chart'=>['labels'=>$chart_labels,'values'=>$chart_values,'series'=>$series,'predicted'=>$predicted,'predictedDate'=>$predictedDate],
     ];
 }
+
+
+function normalizeSortOrders($user_id = null) {
+    global $pdo;
+    // отримуємо список користувачів (або тільки одного)
+    $users = [];
+    if ($user_id !== null) {
+        $users = [$user_id];
+    } else {
+        $users = $pdo->query("SELECT DISTINCT user_id FROM habits")->fetchAll(PDO::FETCH_COLUMN);
+    }
+
+    foreach ($users as $uid) {
+        $stmt = $pdo->prepare("SELECT id FROM habits WHERE user_id = ? ORDER BY COALESCE(sort_order,0) ASC, id ASC");
+        $stmt->execute([$uid]);
+        $ids = $stmt->fetchAll(PDO::FETCH_COLUMN);
+
+        if (empty($ids)) continue;
+        try {
+            $pdo->beginTransaction();
+            $upd = $pdo->prepare("UPDATE habits SET sort_order = ? WHERE id = ?");
+            $i = 1;
+            foreach ($ids as $id) {
+                $upd->execute([$i, $id]);
+                $i++;
+            }
+            $pdo->commit();
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            error_log('normalizeSortOrders error: ' . $e->getMessage());
+        }
+    }
+}
+
+
 
 ?>
