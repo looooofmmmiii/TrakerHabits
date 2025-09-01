@@ -138,3 +138,27 @@
     .spin-btn{display:inline-block;margin-top:12px;background:linear-gradient(90deg,#ef4444,#f97316);color:#fff;padding:10px 14px;border-radius:10px;text-decoration:none;cursor:pointer}
 
     @media (max-width:640px){.top-stats{flex-direction:column}}
+
+
+.drag-handle {
+  background: #f8f9fa;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 18px;
+  cursor: grab;
+  color: #555;
+  transition: all 0.2s ease-in-out;
+}
+
+.drag-handle:hover {
+  background: #e9ecef;
+  color: #222;
+  border-color: #bbb;
+}
+
+.drag-handle:active {
+  cursor: grabbing;
+  background: #dee2e6;
+  transform: scale(0.95);
+}
