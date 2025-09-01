@@ -25,6 +25,15 @@
   will-change: transform;
 }
 
+.main-content {
+  margin-left: 250px;
+  padding: 30px;
+  background: #f9fafb;
+  min-height: 100vh;
+  box-sizing: border-box;
+}
+
+
 /* decorative soft accents (keeps rule scoped to .stat) */
 .stat::before{
   content: '';

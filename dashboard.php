@@ -339,21 +339,16 @@ foreach ($habits as $h) {
 </style>
 </head>
 <body>
-<div class="container">
-    <header style="display:flex;justify-content:space-between;align-items:center">
-        <div>
-            <h1 style="margin:0">Dashboard — Habits & Progress</h1>
-            <div class="muted" style="margin-top:6px">Today: <?php echo e($today); ?></div>
-        </div>
-        <div style="display:flex;gap:12px;align-items:center;justify-content:center;flex-wrap:wrap">
-        <a href="dashboard.php" class="btn" aria-label="Go Dashboard">🏠 Dashboard</a>
-        <a href="habits.php" class="btn" aria-label="Manage Habits">🔥 Manage Habits</a>
-        <a href="tasks.php" class="btn" aria-label="Manage Tasks">📌 Manage Tasks</a>
-        <a href="kanban.php" class="btn" aria-label="Manage Tasks">📌 KanBan</a>
-        <a href="thoughs.php" class="btn" aria-label="Manage Tasks">📌 Thoughs</a>
-        <button id="rouletteOpen" class="spin-btn" aria-haspopup="dialog">🎲 Roulette</button>
-    </div>
-    </header>
+    <?php include "elements.php"; ?>  <!-- sidebar only once -->
+    
+    <div class="main-content">
+        <div class="container">
+            <header style="display:flex;justify-content:space-between;align-items:center">
+                <div>
+                    <h1 style="margin:0">Dashboard — Habits & Progress</h1>
+                    <div class="muted" style="margin-top:6px">Today: <?php echo e($today); ?></div>
+                </div>
+            </header>
 
     <section class="top-stats" role="region" aria-label="Top statistics">
         <div class="stat">

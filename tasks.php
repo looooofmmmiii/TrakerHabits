@@ -133,11 +133,7 @@ function renderTaskTitle(string $title, bool $done): string {
             <h1>📌 Tasks — MVP</h1>
             <div class="meta" id="task-stats"></div>
         </div>
-        <nav>
-            <a href="dashboard.php">🏠 Dashboard</a>
-            <a href="tasks.php">📋 Tasks</a>
-            <a href="habits.php">🔥 Habits</a>
-        </nav>
+        <?php include "elements.php"; ?>
     </header>
 
     <form class="add" method="POST" onsubmit="return addTask(event)">
