@@ -243,73 +243,74 @@ $flash = get_flash();
 <title>Manage Habits — Black theme</title>
 <style>
 :root{
-  /* black theme with soft accents */
-  --bg:#06070a;           /* deep black background */
-  --surface:#0b0f13;      /* card surface slightly lighter than bg */
-  --muted:#9aa4b2;        /* muted text */
-  --text:#e6eef8;         /* primary text on dark bg */
-  --accent-start:#18a699; /* gentle teal */
-  --accent-end:#7b6cf6;   /* soft purple */
-  --danger:#e07b7b;       /* softened red */
-  --shadow: 0 10px 30px rgba(2,6,23,0.6);
+  /* white theme with soft accents */
+  --bg:#f9fafb;            /* light background */
+  --surface:#ffffff;       /* card surface pure white */
+  --muted:#6b7280;         /* muted text (gray) */
+  --text:#1f2937;          /* primary text on light bg */
+  --accent-start:#18a699;  /* gentle teal */
+  --accent-end:#7b6cf6;    /* soft purple */
+  --danger:#dc4c4c;        /* softened red */
+  --shadow:0 10px 30px rgba(0,0,0,0.08);
   --radius:12px;
   --gap:12px;
   --container-w:1100px;
-  --focus: rgba(120,120,200,0.12);
-  --toast-success: #0f6b63;
-  --toast-error: #8f2a2a;
-  --input-bg: rgba(255,255,255,0.02);
-  --border: rgba(255,255,255,0.04);
-  --glass: rgba(255,255,255,0.02);
+  --focus:rgba(120,120,200,0.12);
+  --toast-success:#0f766e;
+  --toast-error:#b91c1c;
+  --input-bg:rgba(0,0,0,0.02);
+  --border:rgba(0,0,0,0.08);
+  --glass:rgba(255,255,255,0.7);
 }
 *{box-sizing:border-box}
-body{ margin:24px; font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial; background:var(--bg); color:var(--text); -webkit-font-smoothing:antialiased; -moz-osx-font-smoothing:grayscale; }
+body{margin:24px;font-family:Inter,ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial;background:var(--bg);color:var(--text);-webkit-font-smoothing:antialiased;-moz-osx-font-smoothing:grayscale;}
 .container{max-width:var(--container-w);margin:0 auto;padding:12px}
 .header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:18px}
 .header h1{margin:0;font-size:22px}
 .header .subtitle{color:var(--muted);font-size:13px}
-.card{background:linear-gradient(180deg,var(--surface), rgba(255,255,255,0.01));border-radius:var(--radius);box-shadow:var(--shadow);padding:18px;border:1px solid var(--border)}
-.form-top{display:grid;grid-template-columns: 1fr 300px;gap:12px;align-items:start}
-@media (max-width:900px){ .form-top{grid-template-columns:1fr} }
-.search-row{display:grid;grid-template-columns: 1fr 140px 100px;gap:10px;align-items:center}
-.search-row input[type="text"], .search-row select{ height:44px;padding:10px;border-radius:10px;border:1px solid var(--border);background:var(--input-bg);font-size:14px;color:var(--text); }
+.card{background:linear-gradient(180deg,var(--surface),rgba(0,0,0,0.01));border-radius:var(--radius);box-shadow:var(--shadow);padding:18px;border:1px solid var(--border)}
+.form-top{display:grid;grid-template-columns:1fr 300px;gap:12px;align-items:start}
+@media(max-width:900px){.form-top{grid-template-columns:1fr}}
+.search-row{display:grid;grid-template-columns:1fr 140px 100px;gap:10px;align-items:center}
+.search-row input[type="text"],.search-row select{height:44px;padding:10px;border-radius:10px;border:1px solid var(--border);background:var(--input-bg);font-size:14px;color:var(--text);}
 .search-row button{height:44px;border-radius:10px;border:1px solid var(--border);background:transparent;color:var(--text);padding:0 12px;font-weight:600}
 .form-grid{display:grid;grid-template-columns:1fr 300px;gap:12px;align-items:start;margin-top:12px}
-@media (max-width:900px){ .form-grid{grid-template-columns:1fr} }
-.input, textarea, select{ width:100%;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--input-bg);font-size:14px;color:var(--text); resize:vertical; }
+@media(max-width:900px){.form-grid{grid-template-columns:1fr}}
+.input,textarea,select{width:100%;padding:12px;border-radius:10px;border:1px solid var(--border);background:var(--input-bg);font-size:14px;color:var(--text);resize:vertical;}
 textarea{min-height:90px}
-.btn{ display:inline-flex;align-items:center;justify-content:center;gap:8px; padding:10px 16px;border-radius:10px;border:none;font-weight:700;cursor:pointer; transition:transform .10s ease, box-shadow .10s ease; background:linear-gradient(90deg,var(--accent-start),var(--accent-end)); color:#041017; box-shadow: 0 6px 20px rgba(123,108,246,0.08); }
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:10px 16px;border-radius:10px;border:none;font-weight:700;cursor:pointer;transition:transform .10s ease,box-shadow .10s ease;background:linear-gradient(90deg,var(--accent-start),var(--accent-end));color:#fff;box-shadow:0 6px 20px rgba(123,108,246,0.18);}
 .btn:hover{transform:translateY(-2px)}
 .btn:active{transform:translateY(0)}
-.btn-sec{ background:transparent;border:1px solid var(--border);padding:10px 14px;border-radius:10px;font-weight:700;color:var(--muted);cursor:pointer; }
-.btn-danger{ background:transparent;color:var(--text);border:1px solid rgba(224,123,123,0.18);padding:10px 14px;border-radius:10px;font-weight:700;cursor:pointer; box-shadow: none; }
+.btn-sec{background:transparent;border:1px solid var(--border);padding:10px 14px;border-radius:10px;font-weight:700;color:var(--muted);cursor:pointer;}
+.btn-danger{background:transparent;color:var(--danger);border:1px solid rgba(220,76,76,0.2);padding:10px 14px;border-radius:10px;font-weight:700;cursor:pointer;box-shadow:none;}
 .habits-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:14px;margin-top:18px}
-.habit{display:flex;flex-direction:column;gap:12px;padding:14px;border-radius:10px;background:linear-gradient(180deg, rgba(255,255,255,0.01), rgba(255,255,255,0.005));box-shadow:var(--shadow);border:1px solid var(--border)}
+.habit{display:flex;flex-direction:column;gap:12px;padding:14px;border-radius:10px;background:linear-gradient(180deg,rgba(0,0,0,0.01),rgba(0,0,0,0.005));box-shadow:var(--shadow);border:1px solid var(--border)}
 .habit .row{display:flex;align-items:flex-start;gap:10px;justify-content:space-between}
 .habit .left{flex:1}
 .habit .title{font-weight:700;margin-bottom:6px;color:var(--text)}
 .habit .desc{color:var(--muted);font-size:13px}
 .habit .meta{display:flex;flex-direction:column;align-items:flex-end;gap:6px}
-.badge{ display:inline-block;padding:6px 10px;border-radius:999px;font-size:12px;border:1px solid rgba(255,255,255,0.03); background:rgba(255,255,255,0.02);color:var(--muted); font-weight:600 }
+.badge{display:inline-block;padding:6px 10px;border-radius:999px;font-size:12px;border:1px solid rgba(0,0,0,0.05);background:rgba(0,0,0,0.02);color:var(--muted);font-weight:600}
 .streak{font-weight:700;color:var(--text);font-size:13px}
 .actions{display:flex;gap:8px;align-items:center}
 .actions .grow{margin-left:auto;display:flex;gap:8px}
-.toast{position:fixed;right:20px;bottom:20px;background:var(--toast-success);color:#fff;padding:12px 16px;border-radius:10px;display:none;z-index:1000;box-shadow:0 12px 30px rgba(2,6,23,0.6)}
-.input:focus, textarea:focus, select:focus, button:focus{outline:0;border-color:var(--accent-end); box-shadow: 0 0 0 6px var(--focus); outline-offset:0}
+.toast{position:fixed;right:20px;bottom:20px;background:var(--toast-success);color:#fff;padding:12px 16px;border-radius:10px;display:none;z-index:1000;box-shadow:0 12px 30px rgba(0,0,0,0.2)}
+.input:focus,textarea:focus,select:focus,button:focus{outline:0;border-color:var(--accent-end);box-shadow:0 0 0 6px var(--focus);outline-offset:0}
 .small{font-size:13px;color:var(--muted)}
 
 /* subtle hover lift */
-.habit:hover{ transform: translateY(-6px); transition: transform .14s cubic-bezier(.2,.9,.2,1); }
+.habit:hover{transform:translateY(-6px);transition:transform .14s cubic-bezier(.2,.9,.2,1)}
 
 /* responsive */
-@media (max-width:640px){
+@media(max-width:640px){
   .search-row{grid-template-columns:1fr 120px}
   .form-top{grid-template-columns:1fr}
 }
+
 </style>
 </head>
 <body>
-  <?php include "elements.php"; ?>  <!-- sidebar only once -->
+<?php include "elements.php"; ?>  <!-- sidebar only once -->
 <div class="container">
   <div class="header">
     <div>

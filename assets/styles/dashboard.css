@@ -132,11 +132,40 @@
 
     /* grid */
     .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
-    .habit-card{background:var(--card);padding:14px;border-radius:12px;box-shadow:var(--shadow);cursor:pointer;outline:none}
-    .habit-card:focus{box-shadow:0 8px 30px rgba(2,6,23,0.08);transform:translateY(-2px)}
-    .habit-card .muted{max-height:3.6em;overflow:hidden;text-overflow:ellipsis}
+    .habit-card {
+      position: relative;
+      /* резервуємо місце справа щоб кнопка не накривала текст/дату */
+      padding-right: 56px; /* підкоригуй при потребі */
+    }
+
+    /* кнопка у правому верхньому куті */
+    .habit-card .drag-handle {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 6px 10px;
+      border-radius: 8px;
+      background: #f8f9fa;
+      border: 1px solid #ddd;
+      font-size: 18px;
+      cursor: grab;
+      z-index: 5;
+    }
     .habit-details{margin-top:10px;padding-top:10px;border-top:1px dashed #eef2ff}
     .habit-actions a{margin-right:8px;text-decoration:none}
+
+        /* фокус/ховер збережені */
+    .habit-card .drag-handle:hover { background:#e9ecef; color:#222; border-color:#bbb; }
+    .habit-card .drag-handle:active { cursor:grabbing; transform:scale(.98); }
+
+    /* мобільні твіки */
+    @media (max-width: 420px) {
+      .habit-card { padding-right: 48px; }
+      .habit-card .drag-handle { top:10px; right:8px; padding:6px; }
+    }
 
     /* roulette modal */
     .modal-backdrop{position:fixed;inset:0;background:rgba(2,6,23,0.6);display:none;align-items:center;justify-content:center;z-index:9999}
@@ -149,16 +178,6 @@
     @media (max-width:640px){.top-stats{flex-direction:column}}
 
 
-.drag-handle {
-  background: #f8f9fa;
-  border: 1px solid #ddd;
-  border-radius: 8px;
-  padding: 6px 10px;
-  font-size: 18px;
-  cursor: grab;
-  color: #555;
-  transition: all 0.2s ease-in-out;
-}
 
 .drag-handle:hover {
   background: #e9ecef;
@@ -171,3 +190,41 @@
   background: #dee2e6;
   transform: scale(0.95);
 }
+
+
+:root{--bg:#f5f7fb;--card:#fff;--muted:#667085;--shadow:0 6px 18px rgba(16,24,40,0.06)}
+html,body{height:100%}
+body{font-family:Inter,system-ui,Arial,Helvetica,sans-serif;margin:0;padding:24px;background:var(--bg);color:#0f172a;line-height:1.35}
+.container{max-width:1100px;margin:0 auto}
+.top-stats{display:flex;gap:16px;margin:18px 0 22px;flex-wrap:wrap}
+.stat{background: linear-gradient(180deg, rgba(255,255,255,0.98), rgba(250,250,255,0.92));padding: 14px;border-radius: 12px;box-shadow: 0 10px 30px rgba(16,24,40,0.06);flex: 1;min-width: 140px;border:1px solid rgba(15,23,42,0.04);position:relative;overflow:hidden;transition:transform .18s ease,box-shadow .18s ease}
+.stat[data-ribbon]::after{content: attr(data-ribbon);position:absolute;top:12px;right:12px;font-size:11px;padding:6px 10px;border-radius:999px;color:#fff;font-weight:700;background:linear-gradient(90deg,#6366f1,#06b6d4);box-shadow:0 8px 20px rgba(99,102,241,0.12)}
+.stat:hover{transform:translateY(-6px);box-shadow:0 22px 60px rgba(16,24,40,0.12)}
+.progress-wrap{background:var(--card);padding:14px;border-radius:12px;box-shadow:var(--shadow);margin-bottom:14px}
+.progress-label{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.progress-bar-outer{background:#eef2ff;border-radius:999px;height:18px;overflow:hidden}
+.progress-bar{height:100%;width:0;border-radius:999px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;font-size:12px;transition:width .6s cubic-bezier(.2,.9,.2,1)}
+.chart-card{background:var(--card);padding:12px;border-radius:12px;box-shadow:var(--shadow);margin-bottom:20px}
+.chart-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
+.habit-card{background:var(--card);padding:14px;border-radius:12px;box-shadow:var(--shadow);cursor:pointer;outline:none;position:relative;padding-right:64px;transition:transform .12s ease,box-shadow .12s ease}
+.habit-card:focus{box-shadow:0 8px 30px rgba(2,6,23,0.08);transform:translateY(-2px)}
+.title-row{display:flex;align-items:flex-start;gap:12px}
+.habit-card h4{margin:0;font-size:1rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.habit-card .meta-right{margin-left:auto;text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:6px}
+.drag-handle{position:absolute;top:12px;right:12px;display:inline-flex;align-items:center;justify-content:center;padding:6px 10px;border-radius:8px;background:#f8f9fa;border:1px solid #ddd;font-size:16px;cursor:grab;z-index:5}
+.drag-handle:hover{background:#e9ecef;color:#222;border-color:#bbb}
+.drag-handle:active{cursor:grabbing;transform:scale(.98)}
+.habit-desc .desc-text{display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;text-overflow:ellipsis;max-height:3.6em;line-height:1.2em}
+.habit-desc.expanded .desc-text{-webkit-line-clamp:none;max-height:none;overflow:visible}
+.desc-toggle{display:inline-block;margin-top:6px;background:none;border:none;color:#0369a1;cursor:pointer;padding:0;font-weight:700;font-size:13px}
+.habit-details{margin-top:10px;padding-top:10px;border-top:1px dashed #eef2ff;display:none}
+.habit-details[aria-hidden="false"]{display:block}
+.habit-actions a{margin-right:8px;text-decoration:none}
+.muted{color:var(--muted);font-size:13px}
+.modal-backdrop{position:fixed;inset:0;background:rgba(2,6,23,0.6);display:none;align-items:center;justify-content:center;z-index:9999}
+.modal{background:var(--card);padding:18px;border-radius:12px;box-shadow:0 10px 40px rgba(2,6,23,0.3);max-width:520px;width:94%;text-align:center}
+.wheel{width:320px;height:320px;border-radius:50%;margin:0 auto;position:relative;overflow:visible;border:8px solid rgba(255,255,255,0.85)}
+.pointer{position:absolute;left:50%;top:8px;transform:translateX(-50%);width:0;height:0;border-left:12px solid transparent;border-right:12px solid transparent;border-bottom:18px solid #111}
+.spin-btn{display:inline-block;margin-top:12px;background:linear-gradient(90deg,#ef4444,#f97316);color:#fff;padding:10px 14px;border-radius:10px;text-decoration:none;cursor:pointer}
+@media (max-width:640px){.top-stats{flex-direction:column}.habit-card{padding-right:52px}.drag-handle{top:10px;right:8px;padding:6px}}
