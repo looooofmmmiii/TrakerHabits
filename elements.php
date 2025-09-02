@@ -246,7 +246,7 @@ if (!empty($user['raw_name'])) {
 
 <div class="sidebar">
   <div>
-    <div class="sidebar-header">Better Social</div>
+    <div class="sidebar-header">Better Life</div>
 
     <div class="sidebar-menu">
       <a href="dashboard.php" class="<?= $current_page==='dashboard.php' ? 'active' : '' ?>">📊 Dashboard</a>

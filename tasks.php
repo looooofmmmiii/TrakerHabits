@@ -127,6 +127,7 @@ function renderTaskTitle(string $title, bool $done): string {
     </style>
 </head>
 <body>
+    <?php include "elements.php"; ?>  <!-- sidebar only once -->
 <div class="wrap">
     <header>
         <div>

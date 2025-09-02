@@ -154,7 +154,7 @@ $thoughts = $stmt->fetchAll(PDO::FETCH_ASSOC);
   </style>
 </head>
 <body class="bg-gradient-to-b from-slate-50 to-white min-h-screen py-10">
-
+<?php include "elements.php"; ?>  <!-- sidebar only once -->
 <div> <div style="display:flex;gap:12px;align-items:center;justify-content:center;flex-wrap:wrap"> <a href="dashboard.php" class="btn" aria-label="Go Dashboard">🏠 Dashboard</a> <a href="habits.php" class="btn" aria-label="Manage Habits">🔥 Manage Habits</a> <a href="tasks.php" class="btn" aria-label="Manage Tasks">📌 Manage Tasks</a> <a href="kanban.php" class="btn" aria-label="Manage Tasks">📌 KanBan</a> <a href="thoughs.php" class="btn" aria-label="Manage Tasks">📌 Thoughs</a> <button id="rouletteOpen" class="spin-btn" aria-haspopup="dialog">🎲 Roulette</button> </div>
 
   <div class="max-w-6xl mx-auto px-6">

@@ -383,7 +383,7 @@ foreach ($habits as $h) {
 
         <div class="stat">
         <h3>Best Streak</h3>
-        <p><?php echo intval($longestStreak); ?> now</p>
+        <p><?php echo intval($longestStreak); ?> days now</p>
         <div class="muted">Longest streak across habits</div>
     </div>
 

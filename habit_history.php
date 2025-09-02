@@ -294,6 +294,8 @@ body{font-family:Inter,system-ui,Arial,Helvetica,sans-serif;padding:20px;backgro
 </style>
 </head>
 <body>
+<?php include "elements.php"; ?>  <!-- sidebar only once -->
+
 <div class="container">
     <header class="header">
         <div>

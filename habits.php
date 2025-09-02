@@ -309,6 +309,7 @@ textarea{min-height:90px}
 </style>
 </head>
 <body>
+  <?php include "elements.php"; ?>  <!-- sidebar only once -->
 <div class="container">
   <div class="header">
     <div>

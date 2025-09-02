@@ -290,6 +290,7 @@ $workspaceJson = json_encode($workspaceList, JSON_HEX_TAG|JSON_HEX_AMP|JSON_HEX_
   </style>
 </head>
 <body class="bg-gray-50 min-h-screen font-sans text-gray-800">
+  <?php include "elements.php"; ?>  <!-- sidebar only once -->
   <header class="header-min p-3">
     <div class="max-w-7xl mx-auto flex items-center justify-between gap-3">
       <div class="flex items-center gap-3">
