@@ -519,30 +519,64 @@ SQL;
                     'completed' => intval($r['completed_count'])
                 ];
             }
+            $series = [];
             foreach ($datesRange as $d) {
                 if (isset($map[$d])) {
-                    $val = max(0.0, min(100.0, $map[$d]['efficiency']));
-                    $series[] = ['date' => $d, 'value' => round($val,2), 'total' => $map[$d]['total'], 'completed' => $map[$d]['completed']];
+                    $val = max(0.0, min(100.0, (float)$map[$d]['efficiency']));
+                    $series[] = [
+                        'date' => $d,
+                        'value' => round($val, 2),
+                        'total' => $map[$d]['total'],
+                        'completed' => $map[$d]['completed']
+                    ];
                 } else {
-                    $series[] = ['date'=>$d,'value'=>0.0,'total'=>0,'completed'=>0];
+                    $series[] = ['date' => $d, 'value' => 0.0, 'total' => 0, 'completed' => 0];
                 }
             }
-            $chart_labels = array_map(fn($i) => $i['date'], $series);
-            $chart_values = array_map(fn($i) => $i['value'], $series);
+
+            $chart_labels = array_column($series, 'date');
+            $chart_values = array_column($series, 'value');
             $n = count($chart_values);
+
+            $predicted = null;
+
             if ($n >= 2) {
-                $deltas = [];
-                for ($i = 1; $i < $n; $i++) $deltas[] = $chart_values[$i] - $chart_values[$i-1];
-                $avgDelta = array_sum($deltas) / max(1, count($deltas));
-                $lastVal = floatval($chart_values[$n-1]);
-                $predicted = $lastVal + $avgDelta;
-            } elseif ($n === 1) $predicted = floatval($chart_values[0]);
+            $x = range(1, $n);
+            $y = $chart_values;
+            $x_mean = array_sum($x) / $n;
+            $y_mean = array_sum($y) / $n;
+
+            $num = 0.0; $den = 0.0;
+            for ($i = 0; $i < $n; $i++) {
+                $num += ($x[$i] - $x_mean) * ($y[$i] - $y_mean);
+                $den += ($x[$i] - $x_mean) ** 2;
+            }
+            $slope = ($den != 0) ? $num / $den : 0;
+            $intercept = $y_mean - $slope * $x_mean;
+
+            // прогноз наступного дня
+            $predicted = $intercept + $slope * ($n + 1);
+            }
+
+            if ($n >= 3) {
+                $alpha = 0.5; // чутливість (0.1 – плавно, 0.9 – різко реагує)
+                $ema = $chart_values[0];
+                foreach ($chart_values as $val) {
+                    $ema = $alpha * $val + (1 - $alpha) * $ema;
+                }
+                $predicted = $ema;
+            }
+
+
+
             if (!is_null($predicted)) {
-                $predicted = max(0.0, min(100.0, round($predicted,2)));
+                $predicted = max(0.0, min(100.0, round($predicted, 2)));
+
                 $lastLabel = end($chart_labels) ?: $endDate->format('Y-m-d');
                 $lastDateObj = DateTimeImmutable::createFromFormat('Y-m-d', $lastLabel) ?: $endDate;
                 $predictedDate = $lastDateObj->add(new DateInterval('P1D'))->format('Y-m-d');
             }
+
         } else {
             // fallback compute from $progress
             foreach ($datesRange as $d) {
@@ -617,6 +651,88 @@ function normalizeSortOrders($user_id = null) {
     }
 }
 
+/**
+ * Return array of habit ids that are completed for $user_id on $date (YYYY-MM-DD)
+ * returns array of ints
+ */
+if (!function_exists('getCompletedHabitIdsOnDate')) {
+    function getCompletedHabitIdsOnDate(int $user_id, string $date): array {
+        global $pdo;
+        $sql = <<<SQL
+SELECT DISTINCT ht.habit_id
+FROM habit_tracking ht
+JOIN habits h ON h.id = ht.habit_id
+WHERE h.user_id = :uid
+  AND ht.track_date = :dt
+  AND ht.completed = 1
+SQL;
+        $stmt = $pdo->prepare($sql);
+        $stmt->execute([':uid' => $user_id, ':dt' => $date]);
+        $rows = $stmt->fetchAll(PDO::FETCH_COLUMN);
+        return array_map('intval', $rows ?: []);
+    }
+}
 
+if (!function_exists('updateSortOrderForIncomplete')) {
+    function updateSortOrderForIncomplete(array $clientOrder, int $user_id, string $date = null): array {
+        global $pdo;
+        if ($date === null) $date = date('Y-m-d');
+
+        $stmt = $pdo->prepare('SELECT id FROM habits WHERE user_id = :uid ORDER BY COALESCE(sort_order,0) ASC, id ASC');
+        $stmt->execute([':uid' => $user_id]);
+        $existing = array_map('intval', $stmt->fetchAll(PDO::FETCH_COLUMN));
+
+        $clean = [];
+        foreach ($clientOrder as $v) {
+            $id = intval($v);
+            if ($id > 0 && in_array($id, $existing, true) && !in_array($id, $clean, true)) $clean[] = $id;
+        }
+
+        $final = $clean;
+        foreach ($existing as $eid) {
+            if (!in_array($eid, $final, true)) $final[] = $eid;
+        }
+
+        $completed = getCompletedHabitIdsOnDate($user_id, $date);
+        $toUpdate = array_values(array_filter($final, function($id) use ($completed) {
+            return !in_array($id, $completed, true);
+        }));
+
+        if (empty($toUpdate)) {
+            return $existing;
+        }
+
+        $cases = [];
+        $params = [];
+        foreach ($toUpdate as $i => $hid) {
+            $pos = $i + 1;
+            $cases[] = "WHEN id = ? THEN ?";
+            $params[] = $hid;
+            $params[] = $pos;
+        }
+
+        $inPlaceholders = implode(',', array_fill(0, count($toUpdate), '?'));
+        $sql = "UPDATE habits SET sort_order = CASE " . implode(" ", $cases) . " ELSE sort_order END WHERE user_id = ?";
+        $sql .= " AND id IN ($inPlaceholders)";
+
+        try {
+            $pdo->beginTransaction();
+            $upd = $pdo->prepare($sql);
+            $execParams = array_merge($params, [$user_id], $toUpdate);
+            $upd->execute($execParams);
+
+            $stmt2 = $pdo->prepare('SELECT id FROM habits WHERE user_id = :uid ORDER BY COALESCE(sort_order,0) ASC, id ASC');
+            $stmt2->execute([':uid' => $user_id]);
+            $canonical = array_map('intval', $stmt2->fetchAll(PDO::FETCH_COLUMN));
+
+            $pdo->commit();
+            return $canonical;
+        } catch (Throwable $e) {
+            if ($pdo->inTransaction()) $pdo->rollBack();
+            error_log('updateSortOrderForIncomplete error: ' . $e->getMessage());
+            throw $e;
+        }
+    }
+}
 
 ?>

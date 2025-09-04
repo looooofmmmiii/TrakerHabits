@@ -162,7 +162,7 @@ if (
         // After update, fetch canonical order from DB to return to client
         $stmt2 = $pdo->prepare('SELECT id FROM habits WHERE user_id = :uid ORDER BY COALESCE(sort_order, 0) ASC, id ASC');
         $stmt2->execute([':uid' => $user_id]);
-        $canonical = array_map('intval', $stmt2->fetchAll(PDO::FETCH_COLUMN));
+        $canonical = updateSortOrderForIncomplete($clean, $user_id, date('Y-m-d'));
 
         $pdo->commit();
 
@@ -180,49 +180,149 @@ if (
 /*
  * Handle normal form POST for marking a habit complete
  */
-if ($_SERVER['REQUEST_METHOD'] === 'POST' && ($_POST['action'] ?? '') === 'complete') {
-    if (!hash_equals($_SESSION['csrf_token'], $_POST['csrf_token'] ?? '')) {
-        $_SESSION['flash_error'] = 'Invalid request';
-        header('Location: dashboard.php'); exit;
-    }
+// тимчасово дозвольте debug (видаліть в продакшн)
+if (!defined('APP_DEBUG')) define('APP_DEBUG', true);
 
-    $last_mark = $_SESSION['last_mark_time'] ?? 0;
-    if (time() - $last_mark < 1) {
-        $_SESSION['flash_error'] = 'Too fast';
-        header('Location: dashboard.php'); exit;
-    }
-    $_SESSION['last_mark_time'] = time();
+/*
+ * JSON reorder handler (SortableJS)
+ * Працює так:
+ *  - перевіряє CSRF
+ *  - приймає {"order":[1,2,3], "csrf_token":"..."}
+ *  - обновляє sort_order ТІЛЬКИ для незавершених сьогодні habit'ів
+ *  - повертає canonical order (усі id) або детальну помилку в APP_DEBUG
+ */
+if ($_SERVER['REQUEST_METHOD'] === 'POST') {
+    // detect JSON request (we assume reorder uses application/json)
+    $ct = $_SERVER['CONTENT_TYPE'] ?? '';
+    if (stripos($ct, 'application/json') !== false) {
+        // read payload
+        $raw = file_get_contents('php://input');
+        $payload = json_decode($raw, true);
+        if (!is_array($payload)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Invalid JSON payload']);
+            exit;
+        }
 
-    $habit_id = (int)($_POST['habit_id'] ?? 0);
-    $habit = getHabit($habit_id, $user_id);
-    if (!$habit) {
-        $_SESSION['flash_error'] = 'Habit not found';
-        header('Location: dashboard.php'); exit;
-    }
+        // CSRF
+        $token = (string)($payload['csrf_token'] ?? '');
+        if (!hash_equals($_SESSION['csrf_token'] ?? '', $token)) {
+            http_response_code(403);
+            echo json_encode(['ok' => false, 'error' => 'Invalid CSRF token']);
+            exit;
+        }
 
-    $ok = trackHabit($habit_id, date('Y-m-d'));
+        // order must be an array
+        $order = $payload['order'] ?? null;
+        if (!is_array($order)) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Invalid order array']);
+            exit;
+        }
 
-    // If successfully tracked — move to end (set sort_order = max+1)
-    if ($ok) {
+        // sanitize -> ints, remove zeros/duplicates while preserving order
+        $clean = [];
+        foreach ($order as $v) {
+            $id = intval($v);
+            if ($id > 0 && !in_array($id, $clean, true)) $clean[] = $id;
+        }
+        if (count($clean) === 0) {
+            http_response_code(400);
+            echo json_encode(['ok' => false, 'error' => 'Empty order']);
+            exit;
+        }
+
+        // Ensure helper exists (you may have this helper from earlier suggestion)
+        if (!function_exists('updateSortOrderForIncomplete') || !function_exists('getCompletedHabitIdsOnDate')) {
+            // Optional: define fallback simple implementation or fail with descriptive error
+            http_response_code(500);
+            echo json_encode(['ok' => false, 'error' => 'Server helper missing: updateSortOrderForIncomplete']);
+            error_log('reorder error: missing helper functions updateSortOrderForIncomplete/getCompletedHabitIdsOnDate');
+            exit;
+        }
+
         try {
-            $stmt = $pdo->prepare('SELECT COALESCE(MAX(sort_order),0) AS m FROM habits WHERE user_id = :uid');
-            $stmt->execute([':uid' => $user_id]);
-            $row = $stmt->fetch(PDO::FETCH_ASSOC);
-            $max = intval($row['m'] ?? 0);
-            $upd = $pdo->prepare('UPDATE habits SET sort_order = :pos WHERE id = :id AND user_id = :uid');
-            $upd->execute([':pos' => $max + 1, ':id' => $habit_id, ':uid' => $user_id]);
+            // perform update — only incomplete items will be updated
+            $canonical = updateSortOrderForIncomplete($clean, $user_id, date('Y-m-d'));
+
+            // success
+            echo json_encode(['ok' => true, 'order' => $canonical]);
+            exit;
         } catch (Throwable $e) {
-            error_log('move-to-end error: '.$e->getMessage());
+            // log details
+            error_log('reorder exception: ' . $e->getMessage());
+            error_log($e->getTraceAsString());
+
+            http_response_code(500);
+            if (defined('APP_DEBUG') && APP_DEBUG) {
+                echo json_encode(['ok' => false, 'error' => 'Server error', 'message' => $e->getMessage(), 'trace' => $e->getTraceAsString()]);
+            } else {
+                echo json_encode(['ok' => false, 'error' => 'Server error']);
+            }
+            exit;
         }
     }
-
-    $_SESSION['flash_' . ($ok ? 'success' : 'error')] = $ok ? 'Habit marked as completed' : 'Unable to track habit';
-    header('Location: dashboard.php'); exit;
+    // else: not JSON request — allow other POST handlers below (e.g. form POST "complete")
 }
+
+
 
 /*
  * Obtain dashboard data
  */
+
+// --- Handle regular form POSTs (not JSON) e.g. marking habit complete
+if ($_SERVER['REQUEST_METHOD'] === 'POST' && stripos($_SERVER['CONTENT_TYPE'] ?? '', 'application/json') === false) {
+    // simple router for form actions
+    $action = (string)($_POST['action'] ?? '');
+    if ($action === 'complete') {
+        // CSRF check
+        $token = (string)($_POST['csrf_token'] ?? '');
+        if (!hash_equals($_SESSION['csrf_token'] ?? '', $token)) {
+            // do not expose details in prod
+            $_SESSION['flash_error'] = 'Invalid CSRF token';
+            header('Location: dashboard.php');
+            exit;
+        }
+
+        $habit_id = intval($_POST['habit_id'] ?? 0);
+        if ($habit_id <= 0) {
+            $_SESSION['flash_error'] = 'Invalid habit id';
+            header('Location: dashboard.php');
+            exit;
+        }
+
+        // verify ownership
+        $stmt = $pdo->prepare('SELECT id FROM habits WHERE id = ? AND user_id = ?');
+        $stmt->execute([$habit_id, $user_id]);
+        $exists = $stmt->fetchColumn();
+        if (!$exists) {
+            $_SESSION['flash_error'] = 'Habit not found or not yours';
+            header('Location: dashboard.php');
+            exit;
+        }
+
+        // perform track (uses your trackHabit helper)
+        try {
+            $ok = trackHabit($habit_id, $today); // $today already defined above as date('Y-m-d')
+            if ($ok) {
+                $_SESSION['flash_success'] = 'Marked completed';
+            } else {
+                $_SESSION['flash_error'] = 'Could not mark habit as completed';
+            }
+        } catch (Throwable $e) {
+            error_log('mark complete error: ' . $e->getMessage());
+            $_SESSION['flash_error'] = 'Server error';
+        }
+
+        // Redirect to avoid double-submit and to show updated state
+        header('Location: dashboard.php');
+        exit;
+    }
+
+    // other non-JSON form actions can be handled here (add more if needed)
+}
+
 $data = [];
 try {
     if (function_exists('getDashboardData')) {
@@ -366,7 +466,10 @@ body{font-family:Inter,system-ui,Arial,Helvetica,sans-serif;margin:0;padding:24p
 </style>
 </head>
 <body>
+    <?php include 'notification.php'; ?>
+
     <?php include "elements.php"; ?>  <!-- sidebar (assumed) -->
+    
 
     <div class="main-content">
         <div class="container">
@@ -458,7 +561,16 @@ body{font-family:Inter,system-ui,Arial,Helvetica,sans-serif;margin:0;padding:24p
                             $nextDate = $nextInfo['date'];
                             $nextLabel = $nextInfo['label'];
                         ?>
-                        <article class="habit-card" role="article" tabindex="0" aria-labelledby="habit-title-<?php echo $hid; ?>" data-hid="<?php echo $hid; ?>" data-id="<?php echo $hid; ?>" aria-expanded="false" role="listitem">
+                       <article class="habit-card"
+                            role="article"
+                            tabindex="0"
+                            aria-labelledby="habit-title-<?php echo $hid; ?>"
+                            data-hid="<?php echo $hid; ?>"
+                            data-id="<?php echo $hid; ?>"
+                            data-done="<?php echo $isDoneToday ? '1' : '0'; ?>"
+                            aria-expanded="false"
+                            role="listitem">
+
                             <!-- drag handle (visual/top-right) -->
                             <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
                                 <button type="button" class="drag-handle"

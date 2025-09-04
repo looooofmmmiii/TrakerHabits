@@ -18,39 +18,50 @@
        Save / Sortable helpers
        ---------------------- */
     function saveOrderToServer(){
-        var cards = Array.from(document.querySelectorAll('.grid .habit-card'));
-        var order = cards.map(function(c){ return parseInt(c.dataset.hid,10) || 0; }).filter(Boolean);
-        if (!order.length) return;
+    var cards = Array.from(document.querySelectorAll('.grid .habit-card'));
+    // only include not-done items in the order we send
+    var order = cards
+        .filter(function(c){ return String(c.dataset.done || '0') !== '1'; })
+        .map(function(c){ return parseInt(c.dataset.hid,10) || 0; })
+        .filter(Boolean);
+    if (!order.length) return;
 
-        fetch('dashboard.php', {
-            method: 'POST',
-            credentials: 'same-origin',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ order: order, csrf_token: CSRF })
-        })
-        .then(function(resp){
-            if (!resp.ok) return resp.text().then(function(t){ throw new Error('Server ' + resp.status + ': ' + (t||resp.statusText)); });
-            var ct = resp.headers.get('content-type') || '';
-            if (ct.indexOf('application/json') === -1) return resp.text().then(function(t){ throw new Error('Invalid JSON response: ' + t); });
-            return resp.json();
-        })
-        .then(function(json){
-            if (json && json.ok) {
-                if (json.order && Array.isArray(json.order) && json.order.length) {
-                    var grid = document.querySelector('.grid');
-                    if (grid) {
-                        var map = {};
-                        Array.from(grid.querySelectorAll('.habit-card')).forEach(function(c){ var id = parseInt(c.dataset.hid,10)||0; if (id) map[id]=c; });
-                        json.order.forEach(function(id){ var el = map[id]; if (el) grid.appendChild(el); });
-                    }
-                }
-                showFlash('Order saved', 'success');
-            } else {
-                showFlash((json && json.error) ? json.error : 'Save failed', 'error');
+    fetch('dashboard.php', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ order: order, csrf_token: CSRF })
+    })
+    .then(function(resp){
+        if (!resp.ok) return resp.text().then(function(t){ throw new Error('Server ' + resp.status + ': ' + (t||resp.statusText)); });
+        var ct = resp.headers.get('content-type') || '';
+        if (ct.indexOf('application/json') === -1) return resp.text().then(function(t){ throw new Error('Invalid JSON response: ' + t); });
+        return resp.json();
+    })
+    .then(function(json){
+        if (json && json.ok && Array.isArray(json.order) && json.order.length) {
+            var grid = document.querySelector('.grid');
+            if (grid) {
+                // build map of elements
+                var map = {};
+                Array.from(grid.querySelectorAll('.habit-card')).forEach(function(c){
+                    var id = parseInt(c.dataset.hid,10)||0; if (id) map[id]=c;
+                });
+                // append only not-done elements in server canonical order
+                json.order.forEach(function(id){
+                    var el = map[id];
+                    if (!el) return;
+                    if (String(el.dataset.done || '0') === '1') return; // leave completed items where they are
+                    grid.appendChild(el);
+                });
             }
-        })
-        .catch(function(err){ console.error('saveOrder error', err); showFlash('Network error while saving order — ' + (err && err.message ? err.message : 'check console'), 'error'); });
-    }
+        }
+        if (json && json.ok) showFlash('Order saved', 'success');
+        else showFlash((json && json.error) ? json.error : 'Save failed', 'error');
+    })
+    .catch(function(err){ console.error('saveOrder error', err); showFlash('Network error while saving order — ' + (err && err.message ? err.message : 'check console'), 'error'); });
+}
+
 
     function initSortableGrid(){
         var grid = document.querySelector('.grid');

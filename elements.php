@@ -261,11 +261,12 @@ $sidebar_classes = 'myapp-sidebar ' . ($sidebar_mode === 'inline' ? 'myapp-sideb
 
     <nav class="sidebar-menu" aria-label="Main navigation">
       <a href="dashboard.php" class="<?= $current_page==='dashboard.php' ? 'active' : '' ?>">📊 Dashboard</a>
+      <a href="roulette.php" class="<?= $current_page==='roulette.php' ? 'active' : '' ?>">🎲 Roulette</a>
       <a href="habits.php" class="<?= $current_page==='habits.php' ? 'active' : '' ?>">🔥 Manage Habits</a>
       <a href="tasks.php" class="<?= $current_page==='tasks.php' ? 'active' : '' ?>">✅ Manage Tasks</a>
       <a href="kanban.php" class="<?= $current_page==='kanban.php' ? 'active' : '' ?>">🗂 Kanban</a>
       <a href="thoughts.php" class="<?= $current_page==='thoughts.php' ? 'active' : '' ?>">💭 Thoughts</a>
-      <a href="roulette.php" class="<?= $current_page==='roulette.php' ? 'active' : '' ?>">🎲 Roulette</a>
+      <a href="notification.php" class="<?= $current_page==='notification.php' ? 'active' : '' ?>">🔪 Notification</a>
     </nav>
   </div>
 
