@@ -397,64 +397,6 @@ if ($isStandalone) {
     exit;
 }
 
-// If we are included (dashboard), render compact notifications with auto-dismiss
-// Only render notifications that haven't been shown in this session.
-$toRender = [];
-foreach ($notifications as $n) {
-    $sessionKey = md5(($n['id'] ?? '') . '|' . ($n['title'] ?? '') . '|' . ($n['message'] ?? ''));
-    if (isset($_SESSION['seen_notifications'][$sessionKey])) continue;
-    $n['__session_key'] = $sessionKey;
-    $toRender[] = $n;
-}
-
-if (!empty($toRender)):
-    ?>
-    <div class="notification-area" aria-live="polite" aria-atomic="true" style="position:fixed;left:18px;bottom:18px;z-index:99998;max-width:360px">
-        <?php foreach ($toRender as $idx => $n):
-            $type = $n['type'] ?? 'info';
-            $bg = ($type === 'success') ? '#ecfdf5' : (($type === 'warning') ? '#fff7ed' : '#eef2ff');
-            $border = ($type === 'success') ? '#10b981' : (($type === 'warning') ? '#f59e0b' : '#6366f1');
-            $nid = htmlspecialchars($n['id'] ?? ('n'.$idx), ENT_QUOTES, 'UTF-8');
-            ?>
-            <div class="notif" role="status" data-notif-id="<?php echo $nid; ?>" data-session-key="<?php echo htmlspecialchars($n['__session_key'], ENT_QUOTES, 'UTF-8'); ?>" style="background:<?php echo $bg; ?>;border-left:4px solid <?php echo $border; ?>;padding:12px;margin-bottom:10px;border-radius:10px;box-shadow:0 6px 18px rgba(16,24,40,0.06);opacity:1;transition:opacity .45s ease,transform .45s ease">
-                <div style="font-weight:700;margin-bottom:4px"><?php echo htmlspecialchars($n['title'] ?? '', ENT_QUOTES, 'UTF-8'); ?></div>
-                <div style="font-size:13px;color:#0f172a;margin-bottom:6px"><?php echo htmlspecialchars($n['message'] ?? '', ENT_QUOTES, 'UTF-8'); ?></div>
-                <?php if (!empty($n['hint'])): ?><div class="muted" style="color:#475569;font-size:13px"><?php echo $n['hint']; ?></div><?php endif; ?>
-                <?php if (!empty($n['link'])): ?>
-                    <div style="margin-top:6px;font-size:12px;color:#334155">→ <?php echo htmlspecialchars($n['link'], ENT_QUOTES, 'UTF-8'); ?></div>
-                <?php endif; ?>
-            </div>
-        <?php endforeach; ?>
-        <div style="font-size:12px;color:#6b7280;margin-top:6px">Всі сповіщення збережені в історії. <a href="notification.php" style="color:inherit">Переглянути історію →</a></div>
-    </div>
-
-    <script>
-        (function(){
-            const AUTO = <?php echo json_encode((int)$AUTO_DISMISS_MS); ?>;
-            const area = document.querySelector('.notification-area');
-            if (!area) return;
-            // для кожного елементу — автоматичне скриття
-            const notifs = Array.from(area.querySelectorAll('.notif'));
-            notifs.forEach((el, i) => {
-                // add stagger to avoid all dismiss at exact same time
-                const delay = AUTO + (i * 300);
-                setTimeout(() => {
-                    el.style.opacity = '0';
-                    el.style.transform = 'translateY(8px)';
-                    setTimeout(() => { try{ el.remove(); } catch(e){} }, 500);
-                }, delay);
-            });
-        })();
-    </script>
-    <?php
-    // mark notifications as seen in session so reloads won't show them again during this session
-    foreach ($toRender as $n) {
-        if (!empty($n['__session_key'])) {
-            $_SESSION['seen_notifications'][ $n['__session_key'] ] = time();
-        }
-    }
-endif;
-
 // expose $notifications to including script if needed
 if (!isset($GLOBALS['notifications'])) $GLOBALS['notifications'] = $notifications;
 

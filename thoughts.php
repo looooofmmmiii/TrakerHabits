@@ -7,7 +7,7 @@ require_once __DIR__ . '/config/db.php';
 //   `id` int NOT NULL AUTO_INCREMENT,
 //   `user_id` int NOT NULL,
 //   `content` text NOT NULL,
-//   `images` text NULL,
+//   `images` text NULL, // JSON array of relative paths
 //   `created_at` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP,
 //   PRIMARY KEY (`id`)
 // ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -26,10 +26,28 @@ function unique_filename(string $orig) {
     return $base . ($ext ? '.' . $ext : '');
 }
 
+function media_type_from_path(string $p): string {
+    $ext = strtolower(pathinfo($p, PATHINFO_EXTENSION));
+    if (in_array($ext, ['mp4','webm','mov','m4v'])) return 'video';
+    if (in_array($ext, ['mp3','wav','ogg','m4a'])) return 'audio';
+    if (in_array($ext, ['jpg','jpeg','png','gif','webp','avif'])) return 'image';
+    return 'other';
+}
+
 function handle_images_upload(string $inputName = 'images') {
     $saved = [];
-    $maxSize = 5 * 1024 * 1024; // 5 MB per file
-    $allowed = ['image/jpeg','image/png','image/webp','image/gif'];
+
+    $limits = [
+        'image' => 5 * 1024 * 1024,
+        'audio' => 12 * 1024 * 1024,
+        'video' => 80 * 1024 * 1024,
+    ];
+
+    $allowed = [
+        'image/jpeg','image/png','image/webp','image/gif','image/avif',
+        'video/mp4','video/webm','video/quicktime','video/x-m4v',
+        'audio/mpeg','audio/mp3','audio/wav','audio/ogg','audio/m4a'
+    ];
 
     if (empty($_FILES[$inputName]) || !is_array($_FILES[$inputName]['name'])) {
         return $saved;
@@ -42,12 +60,20 @@ function handle_images_upload(string $inputName = 'images') {
         $tmp = $_FILES[$inputName]['tmp_name'][$i];
         $name = $_FILES[$inputName]['name'][$i];
         $size = $_FILES[$inputName]['size'][$i];
+
         $finfo = finfo_open(FILEINFO_MIME_TYPE);
         $mime = finfo_file($finfo, $tmp);
         finfo_close($finfo);
 
         if (!in_array($mime, $allowed)) continue;
-        if ($size > $maxSize) continue;
+
+        $type = 'other';
+        if (str_starts_with($mime, 'image/')) $type = 'image';
+        if (str_starts_with($mime, 'video/')) $type = 'video';
+        if (str_starts_with($mime, 'audio/')) $type = 'audio';
+
+        $max = $limits[$type] ?? (5 * 1024 * 1024);
+        if ($size > $max) continue;
 
         $safe = unique_filename($name);
         $dest = __DIR__ . '/uploads/' . $safe;
@@ -59,7 +85,22 @@ function handle_images_upload(string $inputName = 'images') {
     return $saved;
 }
 
-// ---------------------- Render helper ----------------------
+function render_media_preview_html(string $src, string $sizeClass = 'h-24') : string {
+    $type = media_type_from_path($src);
+    $srcEsc = htmlspecialchars($src, ENT_QUOTES | ENT_SUBSTITUTE);
+
+    if ($type === 'image') {
+        return "<img src=\"{$srcEsc}\" alt=\"img\" class=\"w-full {$sizeClass} object-cover rounded-lg\">";
+    }
+    if ($type === 'video') {
+        return "<div class=\"w-full {$sizeClass} rounded-lg overflow-hidden bg-black\"><video class=\"w-full h-full object-cover\" muted playsinline preload=\"metadata\"><source src=\"{$srcEsc}\"></video></div>";
+    }
+    if ($type === 'audio') {
+        return "<div class=\"flex items-center gap-3 p-2 bg-slate-50 rounded-lg\"><svg xmlns=\"http://www.w3.org/2000/svg\" class=\"h-6 w-6\" fill=\"none\" viewBox=\"0 0 24 24\" stroke=\"currentColor\"><path stroke-linecap=\"round\" stroke-linejoin=\"round\" stroke-width=\"2\" d=\"M9 19V6l12-2v13\"/></svg><div class=\"text-sm text-slate-600\">Audio file</div></div>";
+    }
+    return "<a href=\"{$srcEsc}\" target=\"_blank\" class=\"text-sm text-slate-600\">Open file</a>";
+}
+
 function render_thought_html(array $t): string
 {
     $id = (int)$t['id'];
@@ -67,16 +108,16 @@ function render_thought_html(array $t): string
     $initial = htmlspecialchars(mb_substr(trim($t['content']), 0, 1) ?: '•');
     $time = date('d.m.Y H:i', strtotime($t['created_at']));
 
-    // images gallery
     $galleryHtml = '';
     if (!empty($t['images'])) {
         $imgs = json_decode($t['images'], true);
         if (is_array($imgs) && count($imgs) > 0) {
-            $galleryHtml .= '<div class="mt-4 grid grid-cols-3 gap-2">';
+            $galleryHtml .= '<div class="mt-4 grid grid-cols-3 gap-2 media-grid">';
             foreach ($imgs as $idx => $src) {
                 $idxEsc = (int)$idx;
                 $srcEsc = htmlspecialchars($src, ENT_QUOTES | ENT_SUBSTITUTE);
-                $galleryHtml .= "<button data-thought-id=\"{$id}\" data-index=\"{$idxEsc}\" class=\"js-open-image focus:outline-none\"><img src=\"{$srcEsc}\" alt=\"img\" class=\"w-full h-40 object-cover rounded-lg\"></button>";
+                $preview = render_media_preview_html($src, 'h-40');
+                $galleryHtml .= "<button data-thought-id=\"{$id}\" data-index=\"{$idxEsc}\" class=\"js-open-image focus:outline-none\">{$preview}</button>";
             }
             $galleryHtml .= '</div>';
         }
@@ -98,11 +139,9 @@ function render_thought_html(array $t): string
 
 // ---------------------- Router / Actions ----------------------
 if ($_SERVER['REQUEST_METHOD'] === 'POST') {
-    // DELETE (AJAX or regular)
     if (!empty($_POST['delete_id'])) {
         $id = (int) $_POST['delete_id'];
 
-        // fetch images first
         $s = $pdo->prepare("SELECT images FROM thoughts WHERE id = :id");
         $s->execute([':id' => $id]);
         $row = $s->fetch(PDO::FETCH_ASSOC);
@@ -129,7 +168,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // EDIT (only content)
     if (!empty($_POST['edit_id']) && isset($_POST['edit_content'])) {
         $id = (int) $_POST['edit_id'];
         $content = trim((string)$_POST['edit_content']);
@@ -137,7 +175,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         $stmt->execute([':content' => $content, ':id' => $id]);
 
         if (!empty($_POST['ajax'])) {
-            // return updated HTML fragment
             $stmt = $pdo->prepare("SELECT * FROM thoughts WHERE id = :id");
             $stmt->execute([':id' => $id]);
             $t = $stmt->fetch(PDO::FETCH_ASSOC);
@@ -150,12 +187,10 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
         exit;
     }
 
-    // Add thought
     if (!empty($_POST['content'])) {
         $content = trim((string)$_POST['content']);
         if ($content !== '') {
-            // handle images upload
-            $imagesArr = handle_images_upload('images'); // array of relative paths
+            $imagesArr = handle_images_upload('images');
             $imagesJson = $imagesArr ? json_encode($imagesArr, JSON_UNESCAPED_SLASHES) : null;
 
             $stmt = $pdo->prepare("INSERT INTO thoughts (user_id, content, images) VALUES (:user_id, :content, :images)");
@@ -180,7 +215,6 @@ if ($_SERVER['REQUEST_METHOD'] === 'POST') {
     }
 }
 
-// AJAX: load page of thoughts
 if ($_SERVER['REQUEST_METHOD'] === 'GET' && !empty($_GET['ajax'])) {
     $page = max(1, (int)($_GET['page'] ?? 1));
     $perPage = 15;
@@ -222,7 +256,7 @@ $thoughts = $stmt->fetchAll(PDO::FETCH_ASSOC);
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>Думай Вільно — з фото</title>
+  <title>Думай Вільно — медіа + фільтр</title>
   <script src="https://cdn.tailwindcss.com"></script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap">
@@ -230,15 +264,18 @@ $thoughts = $stmt->fetchAll(PDO::FETCH_ASSOC);
   .prose {line-height:1.7;}
   .composer-full { position:fixed;inset:0;background:rgba(6,8,15,0.6);display:flex;align-items:center;justify-content:center;z-index:60;padding:20px; }
   .composer-card{background:#fff;border-radius:18px;max-width:1200px;width:100%;padding:28px;box-shadow:0 10px 30px rgba(2,6,23,0.2)}
-  .btn-ghost{background:transparent;border:1px solid rgba(15,23,42,0.06);} </style>
+  .btn-ghost{background:transparent;border:1px solid rgba(15,23,42,0.06);} 
+  .media-only-overlay{position:fixed;inset:0;background:rgba(6,8,15,0.6);z-index:70;display:flex;align-items:center;justify-content:center;padding:20px}
+  </style>
 </head>
-<body class="bg-gradient-to-b from-slate-50 to-white min-h-screen py-10">
 <?php if (file_exists(__DIR__ . '/elements.php')) include "elements.php"; ?>
+<body class="bg-gradient-to-b from-slate-50 to-white min-h-screen py-10">
+
   <div class="max-w-6xl mx-auto px-6">
     <header class="flex items-center justify-between mb-6">
       <div>
-        <h1 class="text-3xl font-extrabold text-slate-900 flex items-center gap-3">🧭 Думай Вільно — з фото</h1>
-        <p class="text-sm text-gray-500">Просте приватне місце для думок. Add images & lightbox.</p>
+        <h1 class="text-3xl font-extrabold text-slate-900 flex items-center gap-3">🧭 Думай Вільно — медіа</h1>
+        <p class="text-sm text-gray-500">Просте приватне місце для думок + фото/відео/аудіо. Використай фільтр для перегляду лише медіа.</p>
       </div>
       <div class="flex gap-3 items-center">
         <button id="openComposer" class="bg-slate-900 text-white px-4 py-2 rounded-xl shadow">Нова думка</button>
@@ -249,6 +286,11 @@ $thoughts = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
     <main class="grid grid-cols-1 md:grid-cols-3 gap-6">
       <aside class="md:col-span-1 space-y-4 sticky top-6">
+        <div class="bg-white p-4 rounded-2xl shadow flex gap-2">
+          <button class="filter-btn px-3 py-1 rounded-xl bg-indigo-50 text-indigo-700" data-filter="all">Все</button>
+          <button class="filter-btn px-3 py-1 rounded-xl bg-gray-50 text-gray-700" data-filter="media">Медіа</button>
+        </div>
+
         <div class="bg-white p-6 rounded-2xl shadow">
           <div class="flex items-start gap-3">
             <div class="flex-1">
@@ -269,8 +311,19 @@ $thoughts = $stmt->fetchAll(PDO::FETCH_ASSOC);
         </div>
       </aside>
 
-      <section class="md:col-span-2 space-y-4">
-        <div id="list" class="space-y-6">
+      <section class="md:col-span-2 space-y-4 relative">
+        <div id="mediaToolbar" class="hidden bg-white p-3 rounded-2xl shadow flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <strong class="text-sm">Медіа — перегляд</strong>
+            <div class="text-xs text-gray-500">Показані лише елементи з медіа</div>
+          </div>
+          <div class="flex items-center gap-2">
+            <button id="openMediaGallery" class="px-3 py-2 rounded-lg border">Галерея медіа</button>
+            <button id="clearFilter" class="px-3 py-2 rounded-lg">Повернутись</button>
+          </div>
+        </div>
+
+        <div id="list" class="space-y-6 mt-3">
           <?php if ($thoughts): foreach ($thoughts as $t): echo render_thought_html($t); endforeach; else: ?>
             <div class="bg-white p-8 rounded-2xl shadow-sm text-center text-gray-500">Поки що немає думок — додай першу ✨</div>
           <?php endif; ?>
@@ -291,7 +344,7 @@ $thoughts = $stmt->fetchAll(PDO::FETCH_ASSOC);
     <div class="composer-card">
       <div class="flex items-center justify-between mb-4">
         <div class="flex items-center gap-3">
-          <h2 class="text-xl font-semibold">Нова думка — фокус</h2>
+          <h2 class="text-xl font-semibold">Нова думка — медіа</h2>
           <span id="autosaveStatus" class="text-xs text-gray-400">Чернетка: не збережено</span>
         </div>
         <div class="flex items-center gap-3">
@@ -305,9 +358,10 @@ $thoughts = $stmt->fetchAll(PDO::FETCH_ASSOC);
         <div>
           <textarea id="composerInput" rows="12" placeholder="Пиши довго — текст буде широкий і зручний для читання..." class="w-full border rounded-xl px-4 py-4 text-lg leading-8 resize-y" autofocus></textarea>
           <div class="mt-3">
-            <label class="text-sm font-medium">Додати фото</label>
-            <input id="composerImages" name="images[]" type="file" accept="image/*" multiple class="mt-2" />
+            <label class="text-sm font-medium">Додати медіа</label>
+            <input id="composerImages" name="images[]" type="file" accept="image/*,video/*,audio/*" multiple class="mt-2" />
             <div id="composerThumbs" class="mt-3 flex gap-2 flex-wrap"></div>
+            <div class="mt-2 text-xs text-gray-400">Підтримуються: jpg/png/webp/mp4/webm/mp3/wav. Максимальний розмір: фото 5MB, аудіо 12MB, відео 80MB (налаштувати php.ini за потреби).</div>
           </div>
           <div class="flex items-center justify-between mt-3">
             <div class="text-xs text-gray-400">Підтримує базове форматування (новий рядок → абзац)</div>
@@ -320,22 +374,38 @@ $thoughts = $stmt->fetchAll(PDO::FETCH_ASSOC);
   </div>
 
   <!-- Edit modal (small) -->
-  <div id="editModal" class="fixed inset-0 hidden items-center justify-center bg-black/40 p-4">
-    <div class="bg-white rounded-2xl w-full max-w-2xl p-6 shadow-lg">
-      <h3 class="text-lg font-semibold mb-2">Редагувати думку</h3>
-      <textarea id="editInput" rows="10" class="w-full border rounded-xl px-3 py-3 resize-y"></textarea>
-      <div class="mt-4 flex justify-end gap-2">
-        <button id="cancelEdit" class="px-3 py-2 border rounded-xl">Скасувати</button>
-        <button id="saveEdit" class="bg-amber-600 text-white px-4 py-2 rounded-xl">Зберегти</button>
+<div id="editModal" class="fixed inset-0 hidden flex items-center justify-center bg-black/40 p-4" style="z-index: 80;">
+  <div role="dialog" aria-modal="true" aria-labelledby="editModalTitle" class="bg-white rounded-2xl w-full max-w-2xl p-6 shadow-lg">
+    <h3 id="editModalTitle" class="text-lg font-semibold mb-2">Редагувати думку</h3>
+    <textarea id="editInput" rows="10" class="w-full border rounded-xl px-3 py-3 resize-y"></textarea>
+    <div class="mt-4 flex justify-end gap-2">
+      <button id="cancelEdit" class="px-3 py-2 border rounded-xl">Скасувати</button>
+      <button id="saveEdit" class="bg-amber-600 text-white px-4 py-2 rounded-xl">Зберегти</button>
+    </div>
+  </div>
+</div>
+
+  <!-- Media gallery overlay -->
+  <div id="mediaOverlay" class="media-only-overlay hidden" aria-hidden="true">
+    <div class="bg-white rounded-2xl max-w-6xl w-full p-6 overflow-auto">
+      <div class="flex items-center justify-between mb-4">
+        <div class="flex items-center gap-3">
+          <h3 class="text-lg font-semibold">Галерея медіа</h3>
+          <div id="mediaCount" class="text-sm text-gray-500"></div>
+        </div>
+        <div class="flex items-center gap-2">
+          <button id="closeMediaOverlay" class="px-3 py-2 rounded-lg border">Закрити</button>
+        </div>
       </div>
+      <div id="mediaGrid" class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3"></div>
     </div>
   </div>
 
   <!-- Image lightbox / player -->
-  <div id="imgLightbox" class="fixed inset-0 hidden flex items-center justify-center px-4 bg-black/80 z-50">
-    <div class="relative max-w-4xl w-[min(95%,1024px)] mx-auto p-6">
-      <button id="lbClose" class="absolute right-2 top-2 text-white text-xl">✕</button>
-      <img id="lbImage" src="" alt="" class="mx-auto max-h-[80vh] rounded-md"/>
+  <div id="imgLightbox" class="fixed inset-0 hidden flex items-center justify-center px-4 bg-black/90 z-80" style="z-index:90;">
+    <div class="relative max-w-5xl w-[min(98%,1200px)] mx-auto p-4">
+      <button id="lbClose" class="absolute right-2 top-2 text-white text-2xl">✕</button>
+      <div id="lbPlayer" class="mx-auto max-h-[80vh] flex items-center justify-center"></div>
       <div class="flex items-center justify-center gap-4 mt-4">
         <button id="lbPrev" class="px-3 py-2 bg-white/10 text-white rounded">Prev</button>
         <button id="lbPlay" class="px-3 py-2 bg-white/10 text-white rounded">Play</button>
@@ -354,9 +424,16 @@ $thoughts = $stmt->fetchAll(PDO::FETCH_ASSOC);
     const composerInput = qs('#composerInput');
     const autosaveStatus = qs('#autosaveStatus');
     const previewPane = qs('#previewPane');
-    const draftKey = 'thoughts_draft_v2';
+    const draftKey = 'thoughts_draft_v4';
     const composerImagesInput = qs('#composerImages');
     const composerThumbs = qs('#composerThumbs');
+
+    // Media UI
+    const mediaToolbar = qs('#mediaToolbar');
+    const mediaOverlay = qs('#mediaOverlay');
+    const mediaGrid = qs('#mediaGrid');
+    const mediaCount = qs('#mediaCount');
+    let collectedMedia = [];
 
     // Restore draft into wide composer when opened
     function openComposer(prefill = '') {
@@ -424,27 +501,49 @@ $thoughts = $stmt->fetchAll(PDO::FETCH_ASSOC);
       previewPane.classList.toggle('hidden');
     });
 
-    // Composer client preview for images
+    // Composer client preview for images/videos/audios
     function createThumb(file) {
       const wrap = document.createElement('div');
-      wrap.className = 'w-24 h-24 rounded overflow-hidden relative bg-slate-100 flex items-center justify-center';
-      const img = document.createElement('img');
-      img.className = 'object-cover w-full h-full';
+      wrap.className = 'w-24 h-24 rounded overflow-hidden relative bg-slate-100 flex items-center justify-center p-1';
       const del = document.createElement('button');
       del.className = 'absolute top-1 right-1 bg-white/80 rounded-full text-xs px-1';
       del.textContent = '✕';
-      wrap.appendChild(img);
       wrap.appendChild(del);
 
-      const reader = new FileReader();
-      reader.onload = (e) => img.src = e.target.result;
-      reader.readAsDataURL(file);
+      const type = file.type || '';
+      if (type.startsWith('image/')) {
+        const img = document.createElement('img');
+        img.className = 'object-cover w-full h-full';
+        wrap.appendChild(img);
+        const reader = new FileReader();
+        reader.onload = (e) => img.src = e.target.result;
+        reader.readAsDataURL(file);
+      } else if (type.startsWith('video/')) {
+        const vid = document.createElement('video');
+        vid.className = 'object-cover w-full h-full';
+        vid.muted = true; vid.playsInline = true; vid.preload = 'metadata';
+        const reader = new FileReader();
+        reader.onload = (e) => { vid.src = e.target.result; };
+        reader.readAsDataURL(file);
+        wrap.appendChild(vid);
+      } else if (type.startsWith('audio/')) {
+        const ico = document.createElement('div');
+        ico.className = 'flex items-center justify-center w-full h-full text-xs text-gray-600';
+        ico.textContent = 'AUDIO';
+        wrap.appendChild(ico);
+      } else {
+        const ico = document.createElement('div');
+        ico.className = 'flex items-center justify-center w-full h-full text-xs text-gray-600';
+        ico.textContent = file.type || 'FILE';
+        wrap.appendChild(ico);
+      }
 
       del.addEventListener('click', () => {
         wrap.dataset.removed = '1';
         wrap.remove();
       });
 
+      wrap._file = file;
       return wrap;
     }
 
@@ -463,7 +562,6 @@ $thoughts = $stmt->fetchAll(PDO::FETCH_ASSOC);
       if (!content) return alert('Порожній текст не можна зберегти');
       const fd = new FormData(); fd.append('content', content); fd.append('ajax', '1');
 
-      // include image files
       const files = composerImagesInput.files ? Array.from(composerImagesInput.files) : [];
       files.forEach((file, idx) => {
         fd.append('images[]', file);
@@ -489,14 +587,24 @@ $thoughts = $stmt->fetchAll(PDO::FETCH_ASSOC);
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && !composerFull.classList.contains('hidden')) {
         e.preventDefault(); saveComposer();
       }
-      if (e.key === 'Escape' && !composerFull.classList.contains('hidden')) {
-        closeComposer();
+      if (e.key === 'Escape') {
+        if (!composerFull.classList.contains('hidden')) closeComposer();
+        if (!mediaOverlay.classList.contains('hidden')) closeMediaOverlay();
+        if (!qs('#imgLightbox').classList.contains('hidden')) closeLightbox();
+      }
+      // lightbox nav
+      const lb = qs('#imgLightbox');
+      if (!lb.classList.contains('hidden')) {
+        if (e.key === 'ArrowRight') qs('#lbNext').click();
+        if (e.key === 'ArrowLeft') qs('#lbPrev').click();
+        if (e.key === ' ') {
+          e.preventDefault(); qs('#lbPlay').click();
+        }
       }
     });
 
     // Delegated edit & delete handlers
     document.addEventListener('click', function (e) {
-      // delete
       if (e.target.matches('.js-delete')) {
         const id = e.target.getAttribute('data-id');
         if (!confirm('Впевнені що хочете видалити цю думку?')) return;
@@ -509,7 +617,6 @@ $thoughts = $stmt->fetchAll(PDO::FETCH_ASSOC);
         });
       }
 
-      // edit
       if (e.target.matches('.js-edit')) {
         const id = e.target.getAttribute('data-id');
         const el = document.getElementById('thought-' + id);
@@ -520,15 +627,15 @@ $thoughts = $stmt->fetchAll(PDO::FETCH_ASSOC);
         qs('#editModal').dataset.editId = id;
       }
 
-      // gallery open
       const btn = e.target.closest('.js-open-image');
       if (btn) {
         const id = btn.getAttribute('data-thought-id');
         const idx = parseInt(btn.getAttribute('data-index') || '0', 10);
         const article = document.getElementById('thought-' + id);
         if (!article) return;
-        const imgs = Array.from(article.querySelectorAll('img')).map(i => i.src);
-        openLightbox(imgs, idx);
+        const nodes = Array.from(article.querySelectorAll('img, video, audio'));
+        const items = nodes.map(n => ({src: n.src, type: n.tagName.toLowerCase()}));
+        openLightbox(items, idx);
       }
     });
 
@@ -578,49 +685,116 @@ $thoughts = $stmt->fetchAll(PDO::FETCH_ASSOC);
       });
     });
 
+    // Filter buttons
+    qsa('.filter-btn').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const filter = btn.dataset.filter;
+        qsa('.filter-btn').forEach(b => b.classList.remove('bg-indigo-50','text-indigo-700'));
+        if (filter === 'all') {
+          btn.classList.add('bg-indigo-50','text-indigo-700');
+          mediaToolbar.classList.add('hidden');
+          qsa('#list article').forEach(a => a.style.display = '');
+        } else {
+          btn.classList.add('bg-indigo-50','text-indigo-700');
+          // show only articles that contain media
+          qsa('#list article').forEach(a => {
+            const hasMedia = a.querySelector('img,video,audio');
+            a.style.display = hasMedia ? '' : 'none';
+          });
+          mediaToolbar.classList.remove('hidden');
+        }
+      });
+    });
+
+    // Collect all media from visible articles
+    function collectVisibleMedia() {
+      collectedMedia = [];
+      qsa('#list article').forEach(article => {
+        if (article.style.display === 'none') return;
+        const nodes = Array.from(article.querySelectorAll('img,video,audio'));
+        nodes.forEach(n => collectedMedia.push({src: n.src, type: n.tagName.toLowerCase()}));
+      });
+      return collectedMedia;
+    }
+
+    // Open media overlay / gallery
+    qs('#openMediaGallery').addEventListener('click', () => {
+      const items = collectVisibleMedia();
+      renderMediaGrid(items);
+      mediaOverlay.classList.remove('hidden');
+      mediaOverlay.setAttribute('aria-hidden','false');
+    });
+
+    qs('#closeMediaOverlay').addEventListener('click', closeMediaOverlay);
+    function closeMediaOverlay() { mediaOverlay.classList.add('hidden'); mediaOverlay.setAttribute('aria-hidden','true'); mediaGrid.innerHTML = ''; }
+
+    qs('#clearFilter').addEventListener('click', () => { qsa('.filter-btn[data-filter="all"]').forEach(b=>b.click()); });
+
+    function renderMediaGrid(items) {
+      mediaGrid.innerHTML = '';
+      mediaCount.textContent = ` — ${items.length} items`;
+      items.forEach((it, i) => {
+        const btn = document.createElement('button');
+        btn.className = 'rounded overflow-hidden';
+        btn.innerHTML = (() => {
+          if (it.type === 'img' || it.type === 'image') return `<img src="${it.src}" class="w-full h-36 object-cover"/>`;
+          if (it.type === 'video' || it.type === 'video') return `<video src="${it.src}" class="w-full h-36 object-cover" muted playsinline></video>`;
+          if (it.type === 'audio' || it.type === 'audio') return `<div class=\"flex items-center justify-center h-36 bg-slate-50\">Audio</div>`;
+          return `<div class=\"h-36 flex items-center justify-center\">File</div>`;
+        })();
+        btn.addEventListener('click', () => openLightbox(items.map(x=>({src:x.src,type:x.type})), i));
+        mediaGrid.appendChild(btn);
+      });
+    }
+
     // ---------------- Lightbox ----------------
     const imgLightbox = qs('#imgLightbox');
-    const lbImage = qs('#lbImage');
-    let currentImages = [];
-    let currentIndex = 0;
-    let lbTimer = null;
+    const lbPlayer = qs('#lbPlayer');
+    let lbItems = [];
+    let lbIndex = 0;
+    let lbPlaying = false;
 
-    function openLightbox(images, index = 0) {
-      currentImages = images;
-      currentIndex = index;
-      lbImage.src = images[index];
+    function renderLbItem(item) {
+      lbPlayer.innerHTML = '';
+      if (!item) return;
+      if (item.type === 'img' || item.type === 'image') {
+        const img = document.createElement('img'); img.src = item.src; img.className = 'mx-auto max-h-[80vh] rounded-md'; lbPlayer.appendChild(img);
+      } else if (item.type === 'video' || item.type === 'video') {
+        const v = document.createElement('video'); v.src = item.src; v.controls = true; v.className = 'mx-auto max-h-[80vh] rounded-md'; v.autoplay = lbPlaying; lbPlayer.appendChild(v);
+      } else if (item.type === 'audio' || item.type === 'audio') {
+        const a = document.createElement('audio'); a.src = item.src; a.controls = true; a.className = 'w-full'; a.autoplay = lbPlaying; lbPlayer.appendChild(a);
+      } else {
+        const a = document.createElement('a'); a.href = item.src; a.target = '_blank'; a.textContent = 'Open file'; lbPlayer.appendChild(a);
+      }
+    }
+
+    function openLightbox(items, index = 0) {
+      lbItems = items;
+      lbIndex = index;
+      lbPlaying = false;
+      renderLbItem(lbItems[lbIndex]);
       imgLightbox.classList.remove('hidden');
     }
 
-    function closeLightbox() {
-      imgLightbox.classList.add('hidden');
-      stopAutoplay();
+    function closeLightbox() { imgLightbox.classList.add('hidden'); lbPlayer.innerHTML = ''; lbItems = []; }
+
+    function showLbIndex(i) {
+      if (!lbItems.length) return;
+      lbIndex = (i + lbItems.length) % lbItems.length;
+      lbPlaying = false;
+      renderLbItem(lbItems[lbIndex]);
     }
 
-    function showIndex(i) {
-      if (!currentImages.length) return;
-      currentIndex = (i + currentImages.length) % currentImages.length;
-      lbImage.src = currentImages[currentIndex];
-    }
+    qs('#lbNext').addEventListener('click', () => showLbIndex(lbIndex + 1));
+    qs('#lbPrev').addEventListener('click', () => showLbIndex(lbIndex - 1));
 
-    function nextImage() { showIndex(currentIndex + 1); }
-    function prevImage() { showIndex(currentIndex - 1); }
-
-    function startAutoplay(interval = 2500) {
-      stopAutoplay();
-      lbTimer = setInterval(nextImage, interval);
-      qs('#lbPlay').textContent = 'Pause';
-    }
-    function stopAutoplay() {
-      if (lbTimer) clearInterval(lbTimer);
-      lbTimer = null;
-      qs('#lbPlay').textContent = 'Play';
-    }
+    qs('#lbPlay').addEventListener('click', () => {
+      const node = lbPlayer.querySelector('video, audio');
+      if (!node) return;
+      if (node.paused) { node.play(); qs('#lbPlay').textContent = 'Pause'; } else { node.pause(); qs('#lbPlay').textContent = 'Play'; }
+    });
 
     qs('#lbClose').addEventListener('click', closeLightbox);
-    qs('#lbNext').addEventListener('click', nextImage);
-    qs('#lbPrev').addEventListener('click', prevImage);
-    qs('#lbPlay').addEventListener('click', () => { if (lbTimer) stopAutoplay(); else startAutoplay(2500); });
 
   </script>
 </body>
