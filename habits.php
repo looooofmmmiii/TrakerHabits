@@ -336,7 +336,12 @@ textarea{min-height:90px}
           </select>
           <button type="submit" class="btn-sec">Search</button>
         </div>
-        <div class="small">Manage and prioritize your habits — quick search for fast access</div>
+        <div class="small" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span>Quick views:</span>
+          <a href="habits.php?filter=daily" class="btn-sec" style="text-decoration:none">2–3 days (daily)</a>
+          <a href="habits.php?filter=weekly" class="btn-sec" style="text-decoration:none">2–3 weeks (weekly)</a>
+        </div>
+        <div class="small">Manage and prioritize your habits - quick search for fast access</div>
       </div>
       <div style="display:flex;justify-content:flex-end;align-items:center">
         <!-- optional extra controls could go here -->

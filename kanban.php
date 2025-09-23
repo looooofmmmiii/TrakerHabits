@@ -228,17 +228,21 @@ $featuresJson = json_encode(['due_date'=>$taskHasDueDate,'priority'=>$taskHasPri
 <script src="https://cdnjs.cloudflare.com/ajax/libs/Sortable/1.15.0/Sortable.min.js" defer></script>
 </head>
 <body class="bg-gray-50 text-gray-900">
+<?php include "elements.php"; ?>
 <header class="bg-white shadow p-3">
   <div class="max-w-6xl mx-auto flex justify-between items-center">
-    <h1 class="text-lg font-semibold">Kanban — Simple</h1>
-    <button @click="openNewTask()" class="bg-indigo-600 text-white px-3 py-1 rounded" x-data>New</button>
+    <h1 class="text-lg font-semibold">Kanban - Simple</h1>
+    <div class="flex gap-2" x-data>
+      <button @click="addColumn()" class="border px-3 py-1 rounded">Add Column</button>
+      <button @click="openNewTask()" class="bg-indigo-600 text-white px-3 py-1 rounded">New</button>
+    </div>
   </div>
 </header>
 
 <main class="max-w-6xl mx-auto p-4" x-data="kanbanApp()" x-init="init()">
-  <div class="flex gap-4 overflow-x-auto">
+  <div class="flex gap-4 overflow-x-auto" id="kanban-columns">
     <template x-for="col in columns" :key="col.id">
-      <div class="w-80 bg-white rounded shadow p-3 flex flex-col" :data-column-id="col.id">
+      <div class="w-80 bg-white rounded shadow-sm border border-gray-200 p-3 flex flex-col" :data-column-id="col.id">
         <div class="flex justify-between items-center mb-2">
           <h2 class="font-medium" x-text="col.name"></h2>
           <div class="text-sm text-gray-500" x-text="col.tasks.length + (col.wip_limit ? ' / '+col.wip_limit : '')"></div>
@@ -248,7 +252,7 @@ $featuresJson = json_encode(['due_date'=>$taskHasDueDate,'priority'=>$taskHasPri
             <div class="text-sm text-gray-400 italic">No tasks</div>
           </template>
           <template x-for="task in col.tasks" :key="task.id">
-            <div class="p-2 bg-gray-50 border rounded" :data-task-id="task.id" tabindex="0">
+            <div class="p-2 bg-gray-50 border rounded hover:shadow-sm" :data-task-id="task.id" tabindex="0">
               <div class="flex justify-between">
                 <div>
                   <div class="font-medium truncate" x-text="task.name"></div>
@@ -309,6 +313,7 @@ function kanbanApp(){
 
     init(){
       this.hookSortables();
+      this.hookColumnsSortable();
     },
 
     hookSortables(){
@@ -324,6 +329,24 @@ function kanbanApp(){
           }
         });
       }, 120);
+    },
+
+    hookColumnsSortable(){
+      const wrap = document.getElementById('kanban-columns');
+      if (!wrap || wrap.dataset.inited) return;
+      new Sortable(wrap, {
+        animation: 150,
+        handle: undefined,
+        draggable: '[data-column-id]',
+        onEnd: () => {
+          const order = Array.from(wrap.querySelectorAll('[data-column-id]')).map((el)=> parseInt(el.dataset.columnId,10));
+          fetch(this.apiPrefix + 'reorder_columns', {
+            method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token': this.csrf},
+            body: JSON.stringify({order})
+          }).then(r=>r.json()).then(j=>{ this.toast(j.ok?'Columns saved':'Save failed', !!j.ok); });
+        }
+      });
+      wrap.dataset.inited = '1';
     },
 
     onDragEnd(evt){
@@ -388,6 +411,18 @@ function kanbanApp(){
         this.columns.forEach(c => c.tasks = c.tasks.filter(t => t.id !== task.id));
         this.toast('Deleted');
       }).catch(()=>this.toast('Delete failed', false));
+    },
+
+    addColumn(){
+      const name = prompt('Column name');
+      if (!name) return;
+      fetch(this.apiPrefix + 'add_column', {
+        method:'POST', headers:{'Content-Type':'application/json','X-CSRF-Token': this.csrf},
+        body: JSON.stringify({name})
+      }).then(r=>r.json()).then(j=>{
+        if (j.ok && j.column){ this.columns.push(j.column); this.$nextTick(()=>this.hookSortables()); this.toast('Column added'); }
+        else this.toast('Add failed', false);
+      }).catch(()=>this.toast('Add failed', false));
     },
 
     applyTemplate(col){

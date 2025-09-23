@@ -27,6 +27,7 @@ if (empty($_SESSION['user_id']) && !empty($_COOKIE[$rememberCookieName])){
         } else clear_cookie($rememberCookieName);
     } else clear_cookie($rememberCookieName);
 }
+// goals (global active count; computed below after other counters)
 
 mb_internal_encoding('UTF-8');
 $user = ['id'=>null,'raw_name'=>'Guest','name'=>'Guest','email'=>'','role'=>'User'];
@@ -43,13 +44,14 @@ if (!empty($_SESSION['user_id'])){
 $current_page = basename($_SERVER['PHP_SELF']);
 $initial='G'; if (!empty($user['raw_name'])){ if(function_exists('mb_substr') && function_exists('mb_strtoupper')){ $ch = mb_substr($user['raw_name'],0,1,'UTF-8'); $initial = mb_strtoupper($ch,'UTF-8'); } else { $initial = strtoupper(substr($user['raw_name'],0,1)); } $initial = htmlspecialchars($initial,ENT_QUOTES,'UTF-8'); }
 
-// Fetch small counts (defensive)
-$unreadNotifications = $pendingTasks = $activeHabits = 0;
-if (!empty($user['id'])){
-    try { $s=$pdo->prepare('SELECT COUNT(*) FROM notifications WHERE user_id = ? AND is_read = 0'); $s->execute([$user['id']]); $unreadNotifications=(int)$s->fetchColumn(); } catch (Throwable $e){ $unreadNotifications=0; }
-    try { $s=$pdo->prepare('SELECT COUNT(*) FROM tasks WHERE user_id = ? AND completed = 0'); $s->execute([$user['id']]); $pendingTasks=(int)$s->fetchColumn(); } catch (Throwable $e){ $pendingTasks=0; }
-    try { $s=$pdo->prepare('SELECT COUNT(*) FROM habits WHERE user_id = ? AND active = 1'); $s->execute([$user['id']]); $activeHabits=(int)$s->fetchColumn(); } catch (Throwable $e){ $activeHabits=0; }
-}
+
+
+// goals (global active count; schema may be single-user)
+try { $s=$pdo->query('SELECT COUNT(*) FROM goals WHERE is_done = 0'); $activeGoals=(int)$s->fetchColumn(); } catch (Throwable $e){ $activeGoals=0; }
+// Counts for badges (best-effort, tolerate missing tables)
+try { $activeHabits=(int)($pdo->query('SELECT COUNT(*) FROM habits')->fetchColumn() ?? 0); } catch (Throwable $e){ $activeHabits=0; }
+try { $pendingTasks=(int)($pdo->query('SELECT COUNT(*) FROM tasks WHERE is_done = 0')->fetchColumn() ?? 0); } catch (Throwable $e){ $pendingTasks=0; }
+if (!isset($unreadNotifications)) { $unreadNotifications = 0; }
 
 if (!defined('SIDEBAR_CSS_INCLUDED')){ define('SIDEBAR_CSS_INCLUDED',true); ?>
 <style>
@@ -114,11 +116,7 @@ if (!defined('SIDEBAR_CSS_INCLUDED')){ define('SIDEBAR_CSS_INCLUDED',true); ?>
   width:28px;display:inline-flex;align-items:center;justify-content:center;font-size:16px;
 }
 .myapp-sidebar .label{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.myapp-sidebar .badge{
-  margin-left:auto;background:#ef4444;color:#fff;
-  font-size:12px;padding:2px 6px;border-radius:999px;
-  min-width:22px;text-align:center;
-}
+.myapp-sidebar .badge{ display:none }
 
 /* avatar always circle */
 .myapp-sidebar .avatar{
@@ -206,6 +204,32 @@ $sidebar_classes = 'myapp-sidebar ' . ($sidebar_mode === 'inline' ? 'myapp-sideb
 $menu = [ ['href'=>'dashboard.php','icon'=>'📊','label'=>'Dashboard','badge'=>0], ['href'=>'roulette.php','icon'=>'🎲','label'=>'Roulette','badge'=>0], ['href'=>'habits.php','icon'=>'🔥','label'=>'Habits','badge'=>$activeHabits], ['href'=>'tasks.php','icon'=>'✅','label'=>'Tasks','badge'=>$pendingTasks], ['href'=>'kanban.php','icon'=>'🗂','label'=>'Kanban','badge'=>0], ['href'=>'thoughts.php','icon'=>'💭','label'=>'Thoughts','badge'=>0], ['href'=>'notification.php','icon'=>'🔔','label'=>'Notifications','badge'=>$unreadNotifications] ];
 ?>
 
+<?php
+// Override and enhance menu with icons and Goals link
+$icoDashboard = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M3 10l9-7 9 7v9a2 2 0 0 1-2 2h-4a2 2 0 0 1-2-2v-5H9v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-9z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+$icoRoulette = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="1.6"/><path d="M12 3v9l6.5 6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+$icoHabits = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 11l3 3L22 4" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/><path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+$icoTasks = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M9 6h11M9 12h11M9 18h11M4 6h.01M4 12h.01M4 18h.01" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+$icoKanban = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><rect x="3" y="4" width="6" height="16" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="10.5" y="4" width="4.5" height="10" rx="1.5" stroke="currentColor" stroke-width="1.6"/><rect x="16" y="4" width="5" height="7" rx="1.5" stroke="currentColor" stroke-width="1.6"/></svg>';
+$icoThoughts = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M21 15a4 4 0 0 1-4 4H8l-5 3 1.5-4.5A8 8 0 1 1 21 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+$icoJournal = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M5 4h11a3 3 0 0 1 3 3v13H7a2 2 0 0 1-2-2V4z" stroke="currentColor" stroke-width="1.6"/><path d="M7 8h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+$icoGoals = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 22V3m0 0l7 3-7 3-7-3 7-3z" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+$icoCommunity = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="7" cy="8" r="3" stroke="currentColor" stroke-width="1.6"/><circle cx="17" cy="8" r="3" stroke="currentColor" stroke-width="1.6"/><path d="M2 19c0-3 3-5 5-5h2c2 0 5 2 5 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M10 19c0-2 2-3 3-3h1c1 0 3 1 3 3" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+$icoBell = '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M15 17h5l-1.4-1.4A2 2 0 0 1 18 14v-3a6 6 0 0 0-12 0v3a2 2 0 0 1-.6 1.4L4 17h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M10 21a2 2 0 0 0 4 0" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>';
+
+$menu = [
+  ['href'=>'dashboard.php','icon'=>$icoDashboard,'label'=>'Dashboard','badge'=>$pendingTasks],
+  ['href'=>'habits.php','icon'=>$icoHabits,'label'=>'Habits','badge'=>$activeHabits],
+  ['href'=>'goals.php','icon'=>$icoGoals,'label'=>'Goals','badge'=>$activeGoals],
+  ['href'=>'tasks.php','icon'=>$icoTasks,'label'=>'Tasks','badge'=>$pendingTasks],
+  ['href'=>'kanban.php','icon'=>$icoKanban,'label'=>'Kanban','badge'=>$pendingTasks],
+  ['href'=>'journal.php','icon'=>$icoJournal,'label'=>'Journal','badge'=>0],
+  ['href'=>'thoughts.php','icon'=>$icoThoughts,'label'=>'Thoughts','badge'=>0],
+  ['href'=>'community.php','icon'=>$icoCommunity,'label'=>'Community','badge'=>0],
+  ['href'=>'roulette.php','icon'=>$icoRoulette,'label'=>'Roulette','badge'=>0],
+];
+?>
+
 <div id="myapp-sidebar-overlay" class="myapp-sidebar-overlay" tabindex="-1" aria-hidden="true"></div>
 <div id="myapp-sidebar" class="<?= $sidebar_classes ?>" role="complementary" aria-label="Main sidebar" data-sidebar-mode="<?= $sidebar_mode ?>">
   <div>
@@ -219,7 +243,7 @@ $menu = [ ['href'=>'dashboard.php','icon'=>'📊','label'=>'Dashboard','badge'=>
     </div>
 
     <form class="quick-search" action="search.php" method="get" role="search" aria-label="Quick search">
-      <input type="search" name="q" placeholder="Search tasks, habits..." aria-label="Search" />
+      <input type="search" name="q" placeholder="Search…" aria-label="Search" />
     </form>
 
     <nav class="sidebar-menu" aria-label="Main navigation">

@@ -134,13 +134,24 @@ function renderTaskTitle(string $title, bool $done): string {
             <h1>📌 Tasks — MVP</h1>
             <div class="meta" id="task-stats"></div>
         </div>
-        <?php include "elements.php"; ?>
+        
     </header>
+    <div class="controls" style="margin-top:8px;display:flex;gap:8px;align-items:center;justify-content:space-between">
+      <div>
+        <input id="taskFilter" type="search" placeholder="Фільтр завдань..." style="padding:8px;border:1px solid #ddd;border-radius:8px" aria-label="Filter tasks">
+        <label style="margin-left:8px;font-size:12px;color:#555"><input id="onlyPending" type="checkbox"> Лише активні</label>
+      </div>
+    </div>
 
     <form class="add" method="POST" onsubmit="return addTask(event)">
         <input type="text" id="new-title" name="title" placeholder="New task..." required>
         <button type="submit" name="add_task">Add</button>
     </form>
+    <div class="controls" style="margin-top:8px;display:flex;gap:8px;align-items:center">
+        <span class="meta">Quick:</span>
+        <button type="button" id="quick-2-3-days" class="meta" style="padding:6px 10px;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer">2–3 days</button>
+        <button type="button" id="quick-2-3-weeks" class="meta" style="padding:6px 10px;border:1px solid #ddd;border-radius:8px;background:#fff;cursor:pointer">2–3 weeks</button>
+    </div>
 
     <div class="controls" style="margin-top:12px">
         <button id="exportBtn">Export JSON</button>
@@ -284,6 +295,52 @@ document.getElementById('clearCompleted').addEventListener('click', async ()=>{
     }
     window.location.reload();
 });
+
+// Quick chips for frequency notes
+document.getElementById('quick-2-3-days')?.addEventListener('click', ()=>{
+    const el = document.getElementById('new-title');
+    if (!el) return; const v = el.value.trim();
+    el.value = v ? (v + ' [⟳ 2–3 days]') : '[⟳ 2–3 days]';
+    el.focus();
+});
+document.getElementById('quick-2-3-weeks')?.addEventListener('click', ()=>{
+    const el = document.getElementById('new-title');
+    if (!el) return; const v = el.value.trim();
+    el.value = v ? (v + ' [⟳ 2–3 weeks]') : '[⟳ 2–3 weeks]';
+    el.focus();
+});
+// -- Filters and pending-only toggle --
+</script>
+<script>
+(function(){
+  const list = document.getElementById('task-list');
+  const filterInput = document.getElementById('taskFilter');
+  const onlyPending = document.getElementById('onlyPending');
+  const stats = document.getElementById('task-stats');
+  if(!list) return;
+  function applyFilters(){
+    const q = (filterInput && filterInput.value || '').toLowerCase();
+    const hideDone = !!(onlyPending && onlyPending.checked);
+    list.querySelectorAll('li').forEach(li => {
+      const titleEl = li.querySelector('.task-title');
+      const title = (titleEl ? titleEl.textContent : '').toLowerCase();
+      const matches = q === '' || title.includes(q);
+      const isDone = li.classList.contains('done');
+      li.style.display = (matches && (!hideDone || !isDone)) ? '' : 'none';
+    });
+    // refresh stats label in a cleaner way
+    try{
+      const total = list.querySelectorAll('li').length;
+      const done = list.querySelectorAll('li.done').length;
+      if (stats) stats.textContent = 'Виконано: ' + done + ' / ' + total;
+    }catch(e){}
+  }
+  if(filterInput) filterInput.addEventListener('input', applyFilters);
+  if(onlyPending) onlyPending.addEventListener('change', applyFilters);
+  const mo = new MutationObserver(applyFilters);
+  mo.observe(list, {attributes:true,childList:true,subtree:true});
+  applyFilters();
+})();
 </script>
 </body>
 </html>

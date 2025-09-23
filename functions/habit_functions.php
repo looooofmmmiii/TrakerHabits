@@ -481,123 +481,250 @@ function getDashboardData(int $user_id, $pdo = null): array {
         if ($maxRun > $longestStreak) $longestStreak = $maxRun;
     }
 
-    // chart time-series last 7 days (try using $pdo if provided for aggregated query)
-    $series = []; $chart_labels = []; $chart_values = []; $predicted = null; $predictedDate = null;
+    // chart time-series + history/comparison data
+    $series = [];
+    $chart_labels = [];
+    $chart_values = [];
+    $predicted = null;
+    $predictedDate = null;
+
+    $historySeries = [];
+    $historyMap = [];
+    $historyRawMap = [];
+    $historyStartObj = $todayObj;
+    $historyEndObj = $todayObj;
+    $historyActiveDays = 0;
+
+    // fetch aggregated history for all dates
+    try {
+        if (!empty($pdo) && ($pdo instanceof PDO)) {
+            $historySql = <<<'SQL'
+SELECT
+    ht.track_date AS track_date,
+    COUNT(ht.id) AS total_tracked,
+    SUM(CASE WHEN ht.completed = 1 THEN 1 ELSE 0 END) AS completed_count
+FROM habit_tracking ht
+JOIN habits h ON h.id = ht.habit_id
+WHERE h.user_id = ?
+GROUP BY ht.track_date
+ORDER BY ht.track_date ASC
+SQL;
+            $stmtHistory = $pdo->prepare($historySql);
+            $stmtHistory->execute([$user_id]);
+            $rows = $stmtHistory->fetchAll(PDO::FETCH_ASSOC) ?: [];
+            foreach ($rows as $r) {
+                $dateKey = (string)($r['track_date'] ?? '');
+                if ($dateKey === '') {
+                    continue;
+                }
+                $historyRawMap[$dateKey] = [
+                    'total' => (int)($r['total_tracked'] ?? 0),
+                    'completed' => (int)($r['completed_count'] ?? 0),
+                ];
+            }
+        } else {
+            foreach ($progress as $p) {
+                $dateKey = (string)($p['track_date'] ?? '');
+                if ($dateKey === '') {
+                    continue;
+                }
+                if (!isset($historyRawMap[$dateKey])) {
+                    $historyRawMap[$dateKey] = ['total' => 0, 'completed' => 0];
+                }
+                $historyRawMap[$dateKey]['total']++;
+                if ((int)($p['completed'] ?? 0) === 1) {
+                    $historyRawMap[$dateKey]['completed']++;
+                }
+            }
+        }
+    } catch (\Throwable $ex) {
+        error_log('getDashboardData history error: ' . $ex->getMessage());
+        $historyRawMap = [];
+    }
+
+    if (!empty($historyRawMap)) {
+        $historyDates = array_keys($historyRawMap);
+        sort($historyDates);
+        try {
+            $historyStartObj = new DateTimeImmutable(reset($historyDates));
+        } catch (\Throwable $e) {
+            $historyStartObj = $todayObj;
+        }
+        try {
+            $historyEndObj = new DateTimeImmutable(end($historyDates));
+        } catch (\Throwable $e) {
+            $historyEndObj = $todayObj;
+        }
+    }
+
+    $periodFull = new DatePeriod($historyStartObj, new DateInterval('P1D'), $historyEndObj->add(new DateInterval('P1D')));
+    $historyTotalTracked = 0;
+    $historyTotalCompleted = 0;
+
+    foreach ($periodFull as $dateObj) {
+        $dateKey = $dateObj->format('Y-m-d');
+        $dayStats = $historyRawMap[$dateKey] ?? ['total' => 0, 'completed' => 0];
+        $totalTracked = (int)$dayStats['total'];
+        $totalCompleted = (int)$dayStats['completed'];
+        $effDay = $totalTracked > 0 ? round(($totalCompleted / max(1, $totalTracked)) * 100, 2) : 0.0;
+        if ($totalTracked > 0) {
+            $historyActiveDays++;
+        }
+        $historyTotalTracked += $totalTracked;
+        $historyTotalCompleted += $totalCompleted;
+        $row = [
+            'date' => $dateKey,
+            'total' => $totalTracked,
+            'completed' => $totalCompleted,
+            'efficiency' => $effDay,
+        ];
+        $historySeries[] = $row;
+        $historyMap[$dateKey] = $row;
+    }
+
+    $historySeriesCount = count($historySeries);
+    $historySeriesByWindow = [
+        'all' => $historySeries,
+    ];
+    foreach ([7, 30, 90] as $window) {
+        if ($historySeriesCount === 0) {
+            $historySeriesByWindow[(string)$window] = [];
+            continue;
+        }
+        if ($historySeriesCount <= $window) {
+            $historySeriesByWindow[(string)$window] = $historySeries;
+        } else {
+            $historySeriesByWindow[(string)$window] = array_values(array_slice($historySeries, $historySeriesCount - $window));
+        }
+    }
+
+    // build 7-day chart data from history map
     $endDate = new DateTimeImmutable('now');
     $startDate = $endDate->sub(new DateInterval('P6D'));
     $datesRange = [];
     $period = new DatePeriod($startDate, new DateInterval('P1D'), $endDate->add(new DateInterval('P1D')));
-    foreach ($period as $d) $datesRange[] = $d->format('Y-m-d');
+    foreach ($period as $d) {
+        $datesRange[] = $d->format('Y-m-d');
+    }
 
-    try {
-        if (!empty($pdo) && ($pdo instanceof PDO)) {
-            $sql = <<<'SQL'
-SELECT 
-    ht.track_date AS track_date,
-    ROUND(AVG(ht.completed) * 100, 2) AS efficiency,
-    COUNT(ht.id) AS total_tracked,
-    SUM(ht.completed) AS completed_count
-FROM habit_tracking ht
-JOIN habits h ON h.id = ht.habit_id
-WHERE h.user_id = ?
-  AND ht.track_date BETWEEN ? AND ?
-GROUP BY ht.track_date
-ORDER BY ht.track_date ASC
-SQL;
-            $startStr = $startDate->format('Y-m-d');
-            $endStr = $endDate->format('Y-m-d');
-            $stmt = $pdo->prepare($sql);
-            $stmt->execute([$user_id, $startStr, $endStr]);
-            $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
-            if (!is_array($rows)) $rows = [];
-            $map = [];
-            foreach ($rows as $r) {
-                if (!isset($r['track_date'])) continue;
-                $map[$r['track_date']] = [
-                    'efficiency' => isset($r['efficiency']) ? floatval($r['efficiency']) : 0.0,
-                    'total' => intval($r['total_tracked']),
-                    'completed' => intval($r['completed_count'])
-                ];
-            }
-            $series = [];
-            foreach ($datesRange as $d) {
-                if (isset($map[$d])) {
-                    $val = max(0.0, min(100.0, (float)$map[$d]['efficiency']));
-                    $series[] = [
-                        'date' => $d,
-                        'value' => round($val, 2),
-                        'total' => $map[$d]['total'],
-                        'completed' => $map[$d]['completed']
-                    ];
-                } else {
-                    $series[] = ['date' => $d, 'value' => 0.0, 'total' => 0, 'completed' => 0];
-                }
-            }
+    foreach ($datesRange as $d) {
+        $day = $historyMap[$d] ?? ['efficiency' => 0.0, 'total' => 0, 'completed' => 0];
+        $series[] = [
+            'date' => $d,
+            'value' => isset($day['efficiency']) ? (float)$day['efficiency'] : 0.0,
+            'total' => isset($day['total']) ? (int)$day['total'] : 0,
+            'completed' => isset($day['completed']) ? (int)$day['completed'] : 0,
+        ];
+    }
 
-            $chart_labels = array_column($series, 'date');
-            $chart_values = array_column($series, 'value');
-            $n = count($chart_values);
+    $chart_labels = array_column($series, 'date');
+    $chart_values = array_map(static fn($row) => (float)$row['value'], $series);
+    $n = count($chart_values);
 
-            $predicted = null;
+    if ($n >= 2) {
+        $x = range(1, $n);
+        $y = $chart_values;
+        $x_mean = array_sum($x) / $n;
+        $y_mean = array_sum($y) / $n;
 
-            if ($n >= 2) {
-            $x = range(1, $n);
-            $y = $chart_values;
-            $x_mean = array_sum($x) / $n;
-            $y_mean = array_sum($y) / $n;
-
-            $num = 0.0; $den = 0.0;
-            for ($i = 0; $i < $n; $i++) {
-                $num += ($x[$i] - $x_mean) * ($y[$i] - $y_mean);
-                $den += ($x[$i] - $x_mean) ** 2;
-            }
-            $slope = ($den != 0) ? $num / $den : 0;
-            $intercept = $y_mean - $slope * $x_mean;
-
-            // прогноз наступного дня
-            $predicted = $intercept + $slope * ($n + 1);
-            }
-
-            if ($n >= 3) {
-                $alpha = 0.5; // чутливість (0.1 – плавно, 0.9 – різко реагує)
-                $ema = $chart_values[0];
-                foreach ($chart_values as $val) {
-                    $ema = $alpha * $val + (1 - $alpha) * $ema;
-                }
-                $predicted = $ema;
-            }
-
-
-
-            if (!is_null($predicted)) {
-                $predicted = max(0.0, min(100.0, round($predicted, 2)));
-
-                $lastLabel = end($chart_labels) ?: $endDate->format('Y-m-d');
-                $lastDateObj = DateTimeImmutable::createFromFormat('Y-m-d', $lastLabel) ?: $endDate;
-                $predictedDate = $lastDateObj->add(new DateInterval('P1D'))->format('Y-m-d');
-            }
-
-        } else {
-            // fallback compute from $progress
-            foreach ($datesRange as $d) {
-                $total = 0; $completed = 0;
-                foreach ($progress as $p) {
-                    if (($p['track_date'] ?? '') === $d) {
-                        $total++;
-                        if (intval($p['completed']) === 1) $completed++;
-                    }
-                }
-                $val = ($total>0) ? round(($completed / $total) * 100, 2) : 0.0;
-                $series[] = ['date'=>$d,'value'=>$val,'total'=>$total,'completed'=>$completed];
-            }
-            $chart_labels = array_map(fn($i)=>$i['date'],$series);
-            $chart_values = array_map(fn($i)=>$i['value'],$series);
-            $predicted = null; $predictedDate = null;
+        $num = 0.0;
+        $den = 0.0;
+        for ($i = 0; $i < $n; $i++) {
+            $num += ($x[$i] - $x_mean) * ($y[$i] - $y_mean);
+            $den += ($x[$i] - $x_mean) ** 2;
         }
-    } catch (\Throwable $ex) {
-        // swallow, but return safe defaults
-        error_log('getDashboardData chart error: '.$ex->getMessage());
-        $series = []; $chart_labels = []; $chart_values = []; $predicted = null; $predictedDate = null;
+        $slope = ($den != 0.0) ? $num / $den : 0.0;
+        $intercept = $y_mean - $slope * $x_mean;
+        $predicted = $intercept + $slope * ($n + 1);
+    }
+
+    if ($n >= 3) {
+        $alpha = 0.5;
+        $ema = $chart_values[0];
+        foreach ($chart_values as $val) {
+            $ema = $alpha * $val + (1 - $alpha) * $ema;
+        }
+        $predicted = $ema;
+    }
+
+    if ($predicted !== null) {
+        $predicted = max(0.0, min(100.0, round((float)$predicted, 2)));
+        $lastLabel = end($chart_labels) ?: $endDate->format('Y-m-d');
+        $lastDateObj = DateTimeImmutable::createFromFormat('Y-m-d', (string)$lastLabel) ?: $endDate;
+        $predictedDate = $lastDateObj->add(new DateInterval('P1D'))->format('Y-m-d');
+    }
+
+    $summarizeRange = static function (DateTimeImmutable $start, DateTimeImmutable $end, array $map) {
+        if ($end < $start) {
+            [$start, $end] = [$end, $start];
+        }
+        $period = new DatePeriod($start, new DateInterval('P1D'), $end->add(new DateInterval('P1D')));
+        $summary = [
+            'start' => $start->format('Y-m-d'),
+            'end' => $end->format('Y-m-d'),
+            'days' => (int)$start->diff($end)->days + 1,
+            'active_days' => 0,
+            'total' => 0,
+            'completed' => 0,
+            'efficiency' => 0.0,
+        ];
+        foreach ($period as $dateObj) {
+            $dateKey = $dateObj->format('Y-m-d');
+            $day = $map[$dateKey] ?? ['total' => 0, 'completed' => 0];
+            $total = (int)$day['total'];
+            $completed = (int)$day['completed'];
+            if ($total > 0) {
+                $summary['active_days']++;
+            }
+            $summary['total'] += $total;
+            $summary['completed'] += $completed;
+        }
+        if ($summary['total'] > 0) {
+            $summary['efficiency'] = round(($summary['completed'] / $summary['total']) * 100, 2);
+        }
+        return $summary;
+    };
+
+    $weeklyCurrent = $summarizeRange($weekStartObj, $weekEndObj, $historyMap);
+    $weeklyCurrent['title'] = 'Цей тиждень';
+    $weeklyPreviousStart = $weekStartObj->sub(new DateInterval('P7D'));
+    $weeklyPreviousEnd = $weekEndObj->sub(new DateInterval('P7D'));
+    $weeklyPrevious = $summarizeRange($weeklyPreviousStart, $weeklyPreviousEnd, $historyMap);
+    $weeklyPrevious['title'] = 'Минулий тиждень';
+    $weeklyComparison = [
+        'current' => $weeklyCurrent,
+        'previous' => $weeklyPrevious,
+        'delta' => [
+            'efficiency' => round($weeklyCurrent['efficiency'] - $weeklyPrevious['efficiency'], 2),
+            'completed' => $weeklyCurrent['completed'] - $weeklyPrevious['completed'],
+            'total' => $weeklyCurrent['total'] - $weeklyPrevious['total'],
+        ],
+    ];
+
+    $current30Start = $todayObj->sub(new DateInterval('P29D'));
+    $current30End = $todayObj;
+    $previous30End = $current30Start->sub(new DateInterval('P1D'));
+    $previous30Start = $previous30End->sub(new DateInterval('P29D'));
+
+    $monthlyCurrent = $summarizeRange($current30Start, $current30End, $historyMap);
+    $monthlyCurrent['title'] = 'Останні 30 днів';
+    $monthlyPrevious = $summarizeRange($previous30Start, $previous30End, $historyMap);
+    $monthlyPrevious['title'] = 'Попередні 30 днів';
+    $monthlyComparison = [
+        'current' => $monthlyCurrent,
+        'previous' => $monthlyPrevious,
+        'delta' => [
+            'efficiency' => round($monthlyCurrent['efficiency'] - $monthlyPrevious['efficiency'], 2),
+            'completed' => $monthlyCurrent['completed'] - $monthlyPrevious['completed'],
+            'total' => $monthlyCurrent['total'] - $monthlyPrevious['total'],
+        ],
+    ];
+
+    $allTimeSummary = $summarizeRange($historyStartObj, $historyEndObj, $historyMap);
+    $allTimeSummary['title'] = 'Весь час';
+    $allTimeSummary['active_days'] = $historyActiveDays;
+    if ($allTimeSummary['total'] > 0) {
+        $allTimeSummary['efficiency'] = round(($allTimeSummary['completed'] / $allTimeSummary['total']) * 100, 2);
     }
 
     return [
@@ -615,6 +742,22 @@ SQL;
         'habitStreakMap'=>$habitStreakMap,
         'longestStreak'=>$longestStreak,
         'chart'=>['labels'=>$chart_labels,'values'=>$chart_values,'series'=>$series,'predicted'=>$predicted,'predictedDate'=>$predictedDate],
+        'history'=>[
+            'series'=>$historySeries,
+            'start'=>$historyStartObj->format('Y-m-d'),
+            'end'=>$historyEndObj->format('Y-m-d'),
+            'active_days'=>$historyActiveDays,
+            'total_tracked'=>$allTimeSummary['total'],
+            'total_completed'=>$allTimeSummary['completed'],
+            'efficiency'=>$allTimeSummary['efficiency'],
+        ],
+        'comparisons'=>[
+            'weekly'=>$weeklyComparison,
+            'monthly'=>$monthlyComparison,
+        ],
+        'summary'=>[
+            'all_time'=>$allTimeSummary,
+        ],
     ];
 }
 

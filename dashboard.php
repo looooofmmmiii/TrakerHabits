@@ -396,6 +396,70 @@ $series = $data['chart']['series'] ?? [];
 $predicted = $data['chart']['predicted'] ?? null;
 $predictedDate = $data['chart']['predictedDate'] ?? null;
 
+
+$historyData = $data['history'] ?? [];
+$historySeries = $historyData['series'] ?? [];
+if (!is_array($historySeries)) $historySeries = [];
+$historyStart = $historyData['start'] ?? $today;
+$historyEnd = $historyData['end'] ?? $today;
+$historyActiveDays = isset($historyData['active_days']) ? intval($historyData['active_days']) : 0;
+$historyTotalsTracked = isset($historyData['total_tracked']) ? intval($historyData['total_tracked']) : 0;
+$historyTotalsCompleted = isset($historyData['total_completed']) ? intval($historyData['total_completed']) : 0;
+$historyEfficiency = isset($historyData['efficiency']) ? (float)$historyData['efficiency'] : 0.0;
+
+$weeklyComparison = $data['comparisons']['weekly'] ?? [];
+$monthlyComparison = $data['comparisons']['monthly'] ?? [];
+$allTimeSummary = $data['summary']['all_time'] ?? [];
+if (!is_array($weeklyComparison)) $weeklyComparison = [];
+if (!is_array($monthlyComparison)) $monthlyComparison = [];
+if (!is_array($allTimeSummary)) $allTimeSummary = [];
+$weeklyCurrent = is_array($weeklyComparison['current'] ?? null) ? $weeklyComparison['current'] : [];
+$weeklyPrevious = is_array($weeklyComparison['previous'] ?? null) ? $weeklyComparison['previous'] : [];
+$weeklyDelta = is_array($weeklyComparison['delta'] ?? null) ? $weeklyComparison['delta'] : [];
+$monthlyCurrent = is_array($monthlyComparison['current'] ?? null) ? $monthlyComparison['current'] : [];
+$monthlyPrevious = is_array($monthlyComparison['previous'] ?? null) ? $monthlyComparison['previous'] : [];
+$monthlyDelta = is_array($monthlyComparison['delta'] ?? null) ? $monthlyComparison['delta'] : [];
+
+$weeklyCurrentEff = isset($weeklyCurrent['efficiency']) ? (float)$weeklyCurrent['efficiency'] : 0.0;
+$weeklyPreviousEff = isset($weeklyPrevious['efficiency']) ? (float)$weeklyPrevious['efficiency'] : 0.0;
+$weeklyDeltaEff = isset($weeklyDelta['efficiency']) ? (float)$weeklyDelta['efficiency'] : 0.0;
+$weeklyCurrentCompleted = isset($weeklyCurrent['completed']) ? intval($weeklyCurrent['completed']) : 0;
+$weeklyPreviousCompleted = isset($weeklyPrevious['completed']) ? intval($weeklyPrevious['completed']) : 0;
+$weeklyDeltaCompleted = isset($weeklyDelta['completed']) ? intval($weeklyDelta['completed']) : 0;
+
+$monthlyCurrentEff = isset($monthlyCurrent['efficiency']) ? (float)$monthlyCurrent['efficiency'] : 0.0;
+$monthlyPreviousEff = isset($monthlyPrevious['efficiency']) ? (float)$monthlyPrevious['efficiency'] : 0.0;
+$monthlyDeltaEff = isset($monthlyDelta['efficiency']) ? (float)$monthlyDelta['efficiency'] : 0.0;
+$monthlyCurrentCompleted = isset($monthlyCurrent['completed']) ? intval($monthlyCurrent['completed']) : 0;
+$monthlyPreviousCompleted = isset($monthlyPrevious['completed']) ? intval($monthlyPrevious['completed']) : 0;
+$monthlyDeltaCompleted = isset($monthlyDelta['completed']) ? intval($monthlyDelta['completed']) : 0;
+
+$deltaClass = static function ($value): string {
+    if ($value > 0) {
+        return 'positive';
+    }
+    if ($value < 0) {
+        return 'negative';
+    }
+    return 'neutral';
+};
+
+$formatDelta = static function ($value, string $suffix = '', int $precision = null): string {
+    $precision = $precision ?? ($suffix === '%' ? 1 : 0);
+    $value = (float)$value;
+    $threshold = $precision > 0 ? 0.5 / pow(10, $precision) : 0.5;
+    if (abs($value) < $threshold) {
+        return '0' . $suffix;
+    }
+    $sign = $value > 0 ? '+' : '';
+    return $sign . number_format($value, $precision, '.', '') . $suffix;
+};
+
+$weeklyEffDeltaText = $formatDelta($weeklyDeltaEff, '%');
+$weeklyCompletedDeltaText = $formatDelta($weeklyDeltaCompleted, '', 0);
+$monthlyEffDeltaText = $formatDelta($monthlyDeltaEff, '%');
+$monthlyCompletedDeltaText = $formatDelta($monthlyDeltaCompleted, '', 0);
+
 if (!is_array($habitStreakMap)) $habitStreakMap = [];
 $currentBestStreak = 0;
 foreach ($habitStreakMap as $hs) {
@@ -416,6 +480,21 @@ foreach ($habits as $h) {
             'description' => $h['description'] ?? ''
         ];
     }
+}
+
+// --- Tasks quick panel data (lightweight integration) ---
+$tasksQuick = [];
+$totalTasks = 0;
+$doneTasks = 0;
+try {
+    $stmtT = $pdo->query("SELECT id, title, priority, is_done FROM tasks ORDER BY priority ASC LIMIT 3");
+    if ($stmtT) { $tasksQuick = $stmtT->fetchAll(PDO::FETCH_ASSOC) ?: []; }
+    $totalTasks = (int)($pdo->query("SELECT COUNT(*) FROM tasks")->fetchColumn() ?? 0);
+    $doneTasks = (int)($pdo->query("SELECT COUNT(*) FROM tasks WHERE is_done = 1")->fetchColumn() ?? 0);
+} catch (Throwable $e) {
+    $tasksQuick = [];
+    $totalTasks = 0;
+    $doneTasks = 0;
 }
 ?>
 <!DOCTYPE html>
@@ -440,7 +519,56 @@ body{font-family:Inter,system-ui,Arial,Helvetica,sans-serif;margin:0;padding:24p
 .progress-bar-outer{background:#eef2ff;border-radius:999px;height:18px;overflow:hidden}
 .progress-bar{height:100%;width:0;border-radius:999px;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:600;font-size:12px;transition:width .6s cubic-bezier(.2,.9,.2,1)}
 .chart-card{background:var(--card);padding:12px;border-radius:12px;box-shadow:var(--shadow);margin-bottom:20px}
-.chart-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px}
+.chart-title{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;gap:12px}
+  .chart-heading{display:flex;flex-direction:column;gap:4px}
+  .chart-heading strong{font-size:16px}
+  .chart-heading .legend{margin-top:0;color:var(--muted);font-size:12px}
+  .ghost-btn{background:#fff;border:1px solid #d1d5db;color:#4f46e5;padding:6px 14px;border-radius:999px;font-weight:600;font-size:13px;cursor:pointer;transition:background .18s ease,box-shadow .18s ease,color .18s ease,border-color .18s ease}
+  .ghost-btn:hover{background:#eef2ff;border-color:#c7d2fe;color:#312e81;box-shadow:0 8px 20px rgba(99,102,241,0.18)}
+  .ghost-btn.small{padding:4px 10px;font-size:12px;border-radius:8px}
+  .history-modal .modal{max-width:880px;width:96%;text-align:left}
+  .history-modal__header{display:flex;justify-content:space-between;align-items:center;margin-bottom:16px}
+  .history-summary{display:flex;flex-wrap:wrap;gap:16px;background:#f8fafc;padding:12px;border-radius:12px;margin-bottom:16px;border:1px solid #e2e8f0}
+  .history-summary .summary-item{flex:1 1 160px;min-width:140px}
+  .history-summary .label{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);margin-bottom:4px;font-weight:600}
+  .history-summary .value{font-weight:700;font-size:16px;color:#1f2937}
+  .history-controls{display:flex;flex-wrap:wrap;gap:8px;margin-bottom:16px}
+  .range-btn{border:1px solid #d1d5db;background:#fff;color:#374151;padding:6px 14px;border-radius:999px;font-weight:600;font-size:13px;cursor:pointer;transition:background .18s ease,color .18s ease,border-color .18s ease,box-shadow .18s ease}
+  .range-btn:hover{background:#eef2ff;color:#1d4ed8;border-color:#c7d2fe}
+  .range-btn.active{background:#4f46e5;color:#fff;border-color:#4f46e5;box-shadow:0 8px 24px rgba(79,70,229,0.28)}
+  .history-chart{min-height:260px;background:var(--card);border-radius:12px;box-shadow:var(--shadow);padding:10px;margin-bottom:18px;position:relative}
+  .history-chart .empty-state{display:flex;align-items:center;justify-content:center;height:100%;color:var(--muted);font-size:14px}
+  .comparison-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px;margin-bottom:4px}
+  .comparison-card{background:var(--card);border-radius:12px;border:1px solid #e2e8f0;padding:14px;box-shadow:0 10px 28px rgba(15,23,42,0.08)}
+  .comparison-title{font-weight:700;margin-bottom:10px;font-size:14px}
+  .comparison-metric,.comparison-sub,.comparison-note{display:flex;justify-content:space-between;align-items:center;margin-bottom:6px}
+  .comparison-metric .label,.comparison-sub .label,.comparison-note .label{color:var(--muted);font-size:12px;font-weight:600}
+  .comparison-metric .value,.comparison-note .value{font-weight:700;font-size:16px;color:#0f172a}
+  .comparison-sub .value{font-weight:700;font-size:15px;color:#0f172a}
+  .comparison-delta,.comparison-sub .delta{font-weight:600;font-size:12px;color:var(--muted)}
+  .comparison-delta.positive,.comparison-sub .delta.positive{color:#047857}
+  .comparison-delta.negative,.comparison-sub .delta.negative{color:#b91c1c}
+
+.tasks-quick{background:var(--card);padding:16px;border-radius:12px;box-shadow:var(--shadow);margin:18px 0;display:flex;flex-direction:column;gap:12px}
+.tasks-quick .header{display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px}
+.tasks-quick .stats{color:var(--muted);font-size:12px}
+.tasks-quick form.add{display:flex;gap:8px;flex-wrap:wrap}
+.tasks-quick form.add input{flex:1 1 220px;padding:8px 10px;border:1px solid #e5e7eb;border-radius:10px;font-size:13px}
+.tasks-quick form.add button{padding:8px 14px;border-radius:10px;border:0;background:#4f46e5;color:#fff;font-weight:700;cursor:pointer;font-size:13px}
+.tasks-cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:14px}
+.task-card{border:1px solid #e2e8f0;border-radius:12px;padding:12px;background:#f8fafc;box-shadow:0 12px 28px rgba(15,23,42,0.08);display:flex;flex-direction:column;gap:10px;position:relative;transition:transform .18s ease,box-shadow .18s ease}
+.task-card:hover{transform:translateY(-2px);box-shadow:0 18px 36px rgba(15,23,42,0.12)}
+.task-card.done{background:#eef2ff;box-shadow:none;opacity:0.88}
+.task-card-top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.task-title{font-weight:700;font-size:15px;color:#0f172a;line-height:1.35;word-break:break-word}
+.task-priority{font-size:11px;text-transform:uppercase;letter-spacing:.05em;background:#e0e7ff;color:#3730a3;padding:3px 8px;border-radius:999px;font-weight:700}
+.task-checkbox{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted)}
+.task-checkbox input{width:16px;height:16px}
+.task-card-actions{display:flex;justify-content:flex-end}
+.task-card-actions a{font-size:12px;font-weight:600;color:#4f46e5;text-decoration:none;padding:6px 10px;border-radius:8px;background:#e0e7ff2e;border:1px solid rgba(79,70,229,0.18);transition:background .18s ease}
+.task-card-actions a:hover{background:#ede9fe}
+.task-card.done .task-card-actions a{background:#d1fae5;border-color:#34d399;color:#047857}
+.tasks-empty{display:flex;align-items:center;justify-content:center;padding:16px;border:1px dashed #cbd5f5;border-radius:10px;color:var(--muted);font-size:13px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:16px}
 .habit-card{background:var(--card);padding:14px;border-radius:12px;box-shadow:var(--shadow);cursor:pointer;outline:none;position:relative;padding-right:64px;transition:transform .12s ease,box-shadow .12s ease}
 .habit-card:focus{box-shadow:0 8px 30px rgba(2,6,23,0.08);transform:translateY(-2px)}
@@ -466,7 +594,7 @@ body{font-family:Inter,system-ui,Arial,Helvetica,sans-serif;margin:0;padding:24p
 </style>
 </head>
 <body>
-    <?php include 'notification.php'; ?>
+
 
     <?php include "elements.php"; ?>  <!-- sidebar (assumed) -->
     
@@ -542,10 +670,64 @@ body{font-family:Inter,system-ui,Arial,Helvetica,sans-serif;margin:0;padding:24p
 
             <section class="chart-card" aria-label="Efficiency by day">
                 <div class="chart-title">
-                    <div><strong>Efficiency by day</strong></div>
-                    <div class="legend">Shows last 7 days. Dashed extension is predicted next day.</div>
+                    <div class="chart-heading">
+                        <strong>Efficiency by day</strong>
+                        <div class="legend">Shows last 7 days. Dashed extension is predicted next day.</div>
+                    </div>
+                    <a class="ghost-btn" href="pages/dashboard/history.php">Full history</a>
                 </div>
                 <div id="miniChart" class="chart-svg" aria-hidden="false"></div>
+            </section>
+
+            <!-- Tasks quick panel: integrate tasks into dashboard -->
+            <section class="tasks-quick" aria-label="Tasks quick panel">
+                <div class="header">
+                    <div><strong>Tasks</strong></div>
+                    <div class="stats"><?php echo intval($doneTasks); ?> / <?php echo intval($totalTasks); ?> done</div>
+                </div>
+                <form class="add" onsubmit="return addTaskQuick(event)">
+                    <input type="text" id="taskQuickTitle" placeholder="New task..." aria-label="New task">
+                    <button type="submit">Add</button>
+                </form>
+                <div class="tasks-cards" id="tasksQuickList">
+                    <?php foreach ($tasksQuick as $t):
+                        $tid = (int)($t['id'] ?? 0);
+                        if ($tid <= 0) { continue; }
+                        $tdone = ((int)($t['is_done'] ?? 0)) === 1;
+                        $priorityRaw = trim((string)($t['priority'] ?? ''));
+                        $priorityLabel = '';
+                        if ($priorityRaw !== '') {
+                            if (ctype_digit($priorityRaw)) {
+                                $priorityNum = (int)$priorityRaw;
+                                if ($priorityNum === 1) { $priorityLabel = 'High'; }
+                                elseif ($priorityNum === 2) { $priorityLabel = 'Medium'; }
+                                elseif ($priorityNum === 3) { $priorityLabel = 'Low'; }
+                                else { $priorityLabel = 'P' . $priorityNum; }
+                            } else {
+                                $priorityLabel = ucfirst($priorityRaw);
+                            }
+                        }
+                    ?>
+                        <article class="task-card <?php echo $tdone ? 'done' : ''; ?>" data-id="<?php echo $tid; ?>" data-done="<?php echo $tdone ? '1' : '0'; ?>">
+                            <div class="task-card-top">
+                                <label class="task-checkbox">
+                                    <input type="checkbox" class="t-toggle" <?php echo $tdone ? 'checked' : ''; ?> aria-label="Toggle task completion">
+                                    <span><?php echo $tdone ? 'Completed' : 'In progress'; ?></span>
+                                </label>
+                                <?php if ($priorityLabel !== ''): ?>
+                                    <span class="task-priority"><?php echo e($priorityLabel); ?></span>
+                                <?php endif; ?>
+                            </div>
+                            <div class="task-title"><?php echo e($t['title'] ?? ''); ?></div>
+                            <div class="task-card-actions">
+                                <a href="tasks.php">Open</a>
+                            </div>
+                        </article>
+                    <?php endforeach; ?>
+                    <?php if (empty($tasksQuick) && $totalTasks === 0): ?>
+                        <div class="tasks-empty">No tasks yet. Add one above or open <a href="tasks.php" style="margin-left:6px">Tasks</a>.</div>
+                    <?php endif; ?>
+                </div>
             </section>
 
             <!-- Habits grid -->
@@ -687,14 +869,65 @@ body{font-family:Inter,system-ui,Arial,Helvetica,sans-serif;margin:0;padding:24p
         csrf: <?php echo json_encode($csrf_token); ?>,
         chart_labels: <?php echo json_encode($chart_labels); ?>,
         chart_values: <?php echo json_encode($chart_values); ?>,
-        predicted: <?php echo json_encode($predicted); ?>,
+        predicted: <?php echo json_encode($predicted, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION); ?>,
         incomplete: <?php echo json_encode(array_values($incompleteHabits), JSON_UNESCAPED_UNICODE); ?>,
+        history_series: <?php echo json_encode($historySeries, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION); ?>,
+        history_start: <?php echo json_encode($historyStart); ?>,
+        history_end: <?php echo json_encode($historyEnd); ?>,
+        history_active_days: <?php echo json_encode($historyActiveDays); ?>,
+        history_totals: <?php echo json_encode(['tracked' => $historyTotalsTracked, 'completed' => $historyTotalsCompleted, 'efficiency' => $historyEfficiency], JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION); ?>,
+        weekly_comparison: <?php echo json_encode($weeklyComparison, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION); ?>,
+        monthly_comparison: <?php echo json_encode($monthlyComparison, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION); ?>,
+        all_time_summary: <?php echo json_encode($allTimeSummary, JSON_UNESCAPED_UNICODE | JSON_PRESERVE_ZERO_FRACTION); ?>,
         flash_success: <?php echo json_encode($_SESSION['flash_success'] ?? null); ?>,
         flash_error: <?php echo json_encode($_SESSION['flash_error'] ?? null); ?>
       };
     </script>
     <?php unset($_SESSION['flash_success'], $_SESSION['flash_error']); ?>
 
+    <script>
+      // Tasks quick panel handlers
+      (function(){
+        function qs(id){ return document.getElementById(id); }
+        const list = qs('tasksQuickList');
+        if(list){
+          list.addEventListener('change', async function(e){
+            if(!e.target.matches('.t-toggle')) return;
+            const card = e.target.closest('.task-card');
+            const id = card && card.dataset.id;
+            if(!id) return;
+            const form = new FormData();
+            form.append('toggle_done','1');
+            form.append('id', id);
+            form.append('is_done', e.target.checked ? '1' : '0');
+            try{
+              const res = await fetch('tasks.php', { method: 'POST', body: form });
+              const json = await res.json();
+              if(json && json.status === 'ok'){
+                const isDone = json.is_done == 1;
+                card.classList.toggle('done', isDone);
+                card.dataset.done = isDone ? '1' : '0';
+                const label = card.querySelector('.task-checkbox span');
+                if(label){ label.textContent = isDone ? 'Completed' : 'In progress'; }
+              }
+            }catch(err){ /* ignore */ }
+          });
+        }
+        window.addTaskQuick = async function(ev){
+          ev.preventDefault();
+          const input = qs('taskQuickTitle');
+          if(!input) return false;
+          const title = (input.value||'').trim();
+          if(!title) return false;
+          const form = new FormData();
+          form.append('add_task','1');
+          form.append('title', title);
+          try { await fetch('tasks.php', { method: 'POST', body: form }); } catch(e) {}
+          window.location.href = 'tasks.php';
+          return false;
+        };
+      })();
+    </script>
     <script src="assets/scripts/dashboard.js" defer></script>
 </body>
 </html>
